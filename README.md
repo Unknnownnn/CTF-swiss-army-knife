@@ -2,7 +2,6 @@
 
 An all-in-one CTF (Capture The Flag) solving tool that combines various utilities commonly needed in CTF challenges. This tool provides a modern, user-friendly GUI interface for various CTF-related tasks.
 
-![238353467-897cd757-ea1f-492d-aaf9-6d1674177e08](https://github.com/user-attachments/assets/abcd9c44-299a-4379-9d7b-88b6e0592bc7)
 
 ## Features
 
