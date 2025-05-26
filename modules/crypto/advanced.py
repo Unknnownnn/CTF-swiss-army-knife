@@ -23,14 +23,15 @@ class AdvancedCrypto:
 
     @staticmethod
     def encode_hex(data: Union[str, bytes]) -> str:
-        """Encode data to hexadecimal"""
+        """Encode data to hexadecimal with spaces every 2 characters"""
         if isinstance(data, str):
             data = data.encode()
-        return binascii.hexlify(data).decode()
+        hex_str = binascii.hexlify(data).decode().upper()
+        return ' '.join(hex_str[i:i+2] for i in range(0, len(hex_str), 2))
 
     @staticmethod
     def decode_hex(data: str) -> bytes:
-        """Decode hexadecimal data"""
+        """Decode hexadecimal data (handles spaces)"""
         try:
             return binascii.unhexlify(data.replace(" ", ""))
         except:

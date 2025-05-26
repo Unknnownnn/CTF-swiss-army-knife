@@ -68,16 +68,30 @@ def vigenere_cipher(text: str, key: str, decrypt: bool = False) -> str:
     key_length = len(key)
     key_as_int = [ord(i) - ord('A') for i in key]
     
-    for i, char in enumerate(text):
+    i = 0  # Separate counter for key position
+    for char in text:
         if char.isalpha():
-            ascii_offset = ord('A') if char.isupper() else ord('a')
+            # Determine the shift based on the key character
             key_shift = key_as_int[i % key_length]
             
+            # Get the base for uppercase/lowercase
+            is_upper = char.isupper()
+            char = char.upper()
+            base = ord('A')
+            
             if decrypt:
-                key_shift = -key_shift
-                
-            shifted = (ord(char) - ascii_offset + key_shift) % 26
-            result += chr(shifted + ascii_offset)
+                # For decryption: plaintext = (ciphertext - key + 26) % 26
+                shifted = (ord(char) - base - key_shift) % 26
+            else:
+                # For encryption: ciphertext = (plaintext + key) % 26
+                shifted = (ord(char) - base + key_shift) % 26
+            
+            # Convert back to character and maintain original case
+            result_char = chr(shifted + base)
+            result += result_char if is_upper else result_char.lower()
+            
+            # Only increment key position for alphabetic characters
+            i += 1
         else:
             result += char
             

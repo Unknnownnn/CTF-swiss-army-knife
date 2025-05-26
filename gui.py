@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget,
                            QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
                            QLineEdit, QTextEdit, QFileDialog, QComboBox,
                            QSpinBox, QMessageBox, QGroupBox, QRadioButton,
-                           QScrollArea, QCheckBox, QSlider, QStackedWidget)
+                           QScrollArea, QCheckBox, QSlider, QStackedWidget,
+                           QSizePolicy)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QSize
 from PyQt6.QtGui import QPixmap, QIcon
 from qt_material import apply_stylesheet
@@ -14,6 +15,11 @@ from scipy.io import wavfile
 import tempfile
 import mimetypes
 import binascii
+import base64
+from typing import Optional
+import re
+import string
+from itertools import product
 
 from modules.crypto.classical import caesar_cipher, vigenere_cipher, rot13, atbash, try_all_caesar_shifts
 from modules.stego.image import analyze_image, extract_data, hide_data
@@ -33,7 +39,15 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CTF Swiss Army Knife")
+        # Set minimum size
         self.setMinimumSize(1200, 800)
+        # Set default/starting size
+        self.resize(1200, 900)
+        # Center the window on the screen
+        screen = QApplication.primaryScreen().geometry()
+        x = (screen.width() - self.width()) // 2
+        y = (screen.height() - self.height()) // 2
+        self.move(x, y)
         
         # Create the main widget and layout
         main_widget = QWidget()
@@ -78,6 +92,7 @@ class MainWindow(QMainWindow):
         # Add pages to stack
         self.content_stack.addWidget(self.create_auto_tab())
         self.content_stack.addWidget(self.create_crypto_tab())
+        self.content_stack.addWidget(self.create_convert_tab())  # Add Convert tab
         self.content_stack.addWidget(self.create_stego_tab())
         self.content_stack.addWidget(self.create_audio_stego_tab())
         self.content_stack.addWidget(self.create_hex_editor_tab())
@@ -86,10 +101,11 @@ class MainWindow(QMainWindow):
         # Create sidebar buttons with icons
         self.create_sidebar_button("AUTO", "", 0)
         self.create_sidebar_button("Cryptography", "", 1)
-        self.create_sidebar_button("Image Stego", "", 2)
-        self.create_sidebar_button("Audio Stego", "", 3)
-        self.create_sidebar_button("Hex Editor", "", 4)
-        self.create_sidebar_button("Forensics", "", 5)
+        self.create_sidebar_button("Convert", "", 2)  # Add Convert button
+        self.create_sidebar_button("Image Stego", "", 3)
+        self.create_sidebar_button("Audio Stego", "", 4)
+        self.create_sidebar_button("Hex Editor", "", 5)
+        self.create_sidebar_button("Forensics", "", 6)
         
         # Add stretch to push content to top
         self.sidebar_layout.addStretch()
@@ -100,10 +116,10 @@ class MainWindow(QMainWindow):
         
         # Create width animation
         self.width_animation = QPropertyAnimation(self.sidebar_container, b"minimumWidth")
-        self.width_animation.setDuration(167)  # Approximately 60 FPS for 10 frames
+        self.width_animation.setDuration(167)  
         
-        # Use a custom easing curve for natural motion
-        custom_curve = QEasingCurve(QEasingCurve.Type.OutQuint)  # Changed to OutQuint for smoother motion
+   
+        custom_curve = QEasingCurve(QEasingCurve.Type.OutQuint) 
         custom_curve.setAmplitude(1.0)
         custom_curve.setPeriod(0.3)
         self.width_animation.setEasingCurve(custom_curve)
@@ -127,6 +143,7 @@ class MainWindow(QMainWindow):
         icon_mapping = {
             "AUTO": "auto.ico",
             "Cryptography": "crypto.ico",
+            "Convert": "convert.ico",
             "Image Stego": "imgsteg.ico",
             "Audio Stego": "audio.ico",
             "Hex Editor": "hex.ico",
@@ -167,12 +184,13 @@ class MainWindow(QMainWindow):
             self.width_animation.setStartValue(current_width)
             self.width_animation.setEndValue(200)
             # Restore button texts
+            labels = ["AUTO", "Cryptography", "Convert", "Image Stego", "Audio Stego", "Hex Editor", "Forensics"]
             for i in range(1, self.sidebar_layout.count() - 1):
                 widget = self.sidebar_layout.itemAt(i).widget()
                 if isinstance(widget, QPushButton):
                     index = widget.property("index")
-                    labels = ["AUTO", "Cryptography", "Image Stego", "Audio Stego", "Hex Editor", "Forensics"]
-                    widget.setText(labels[index])
+                    if index is not None and 0 <= index < len(labels):
+                        widget.setText(labels[index])
         
         self.width_animation.start()
         self.toggle_button.setText("≡" if not self.sidebar_expanded else "»")
@@ -566,10 +584,62 @@ class MainWindow(QMainWindow):
             if text:
                 self.auto_results.append("=== Text Analysis ===\n")
                 
-                # Try Caesar cipher shifts first
+                # Try format conversions first
+                self.auto_results.append("Trying format conversions...\n")
+                formats = ["Hex", "Decimal", "Binary", "Base64", "Base32", "Base16", "Base85"]
+                found_flag = False
+                
+                # Try single conversion first
+                for fmt in formats:
+                    try:
+                        # Convert to bytes
+                        data = self.format_to_bytes(text, fmt)
+                        if data:
+                            decoded = data.decode('ascii', errors='replace')
+                            if any(32 <= ord(c) <= 126 for c in decoded):  # Contains printable chars
+                                self.auto_results.append(f"➜ {fmt} → ASCII:")
+                                self.auto_results.append(f"  {decoded}\n")
+                                
+                                # Check for flag patterns
+                                if basex.looks_like_flag(decoded, custom_pattern):
+                                    self.auto_results.append("  ⚑ Flag format detected!")
+                                    all_most_likely_flags.add(decoded)
+                                    found_flag = True
+                    except:
+                        continue
+                
+                # If no flags found, try deep analysis with double conversion
+                if not found_flag:
+                    self.auto_results.append("\nTrying deep format analysis...\n")
+                    for fmt1 in formats:
+                        for fmt2 in formats:
+                            if fmt1 != fmt2:
+                                try:
+                                    # First conversion
+                                    data1 = self.format_to_bytes(text, fmt1)
+                                    if data1:
+                                        # Convert to intermediate format
+                                        inter = self.bytes_to_format(data1, fmt2)
+                                        if inter:
+                                            # Second conversion
+                                            data2 = self.format_to_bytes(inter, fmt2)
+                                            if data2:
+                                                decoded = data2.decode('ascii', errors='replace')
+                                                if any(32 <= ord(c) <= 126 for c in decoded):
+                                                    self.auto_results.append(f"➜ {fmt1} → {fmt2} → ASCII:")
+                                                    self.auto_results.append(f"  {decoded}\n")
+                                                    
+                                                    # Check for flag patterns
+                                                    if basex.looks_like_flag(decoded, custom_pattern):
+                                                        self.auto_results.append("  ⚑ Flag format detected!")
+                                                        all_most_likely_flags.add(decoded)
+                                except:
+                                    continue
+                
+                # Try Caesar cipher shifts
                 caesar_results = try_all_caesar_shifts(text, custom_pattern)
                 if caesar_results['likely_flags']:
-                    self.auto_results.append("Caesar Cipher Analysis:")
+                    self.auto_results.append("\nCaesar Cipher Analysis:")
                     for shift, decoded, confidence in caesar_results['likely_flags']:
                         self.auto_results.append(f"➜ Shift {shift} ({confidence*100:.1f}% confidence):")
                         self.auto_results.append(f"  {decoded}\n")
@@ -1553,8 +1623,171 @@ class MainWindow(QMainWindow):
             
             self.cipher_options_layout.addWidget(shift_container)
         elif cipher == "Vigenère":
-            self.cipher_options_layout.addWidget(QLabel("Key:"))
-            self.cipher_options_layout.addWidget(self.key_input)
+            options_container = QWidget()
+            options_layout = QVBoxLayout(options_container)
+            options_layout.setContentsMargins(0, 0, 0, 0)
+            options_layout.setSpacing(10)  # Add spacing between elements
+            
+            # Key input
+            key_layout = QHBoxLayout()
+            key_layout.addWidget(QLabel("Key:"))
+            self.key_input.setPlaceholderText("Enter key for manual decryption...")
+            self.key_input.setFixedHeight(30)  # Fix height
+            key_layout.addWidget(self.key_input)
+            options_layout.addLayout(key_layout)
+            
+            # Create scroll area for brute force options
+            scroll_area = QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+            scroll_area.setMinimumHeight(300)  # Reduced minimum height
+            scroll_area.setMaximumHeight(500)  # Added maximum height
+            scroll_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            
+            # Create container widget for scroll area
+            scroll_content = QWidget()
+            scroll_layout = QVBoxLayout(scroll_content)
+            scroll_layout.setSpacing(10)
+            scroll_layout.setContentsMargins(10, 10, 10, 10)
+            
+            # Brute force options
+            brute_group = QGroupBox("Brute Force Options")
+            brute_layout = QVBoxLayout()
+            brute_layout.setSpacing(10)  # Add spacing between elements
+            
+            # Format pattern input
+            pattern_layout = QHBoxLayout()
+            pattern_layout.addWidget(QLabel("Format Pattern:"))
+            self.vigenere_pattern = QLineEdit()
+            self.vigenere_pattern.setPlaceholderText("e.g., flag{...} or CTF{...}")
+            self.vigenere_pattern.setFixedHeight(30)  # Fix height
+            pattern_layout.addWidget(self.vigenere_pattern)
+            brute_layout.addLayout(pattern_layout)
+            
+            # Key length range
+            length_layout = QHBoxLayout()
+            length_layout.addWidget(QLabel("Key Length Range:"))
+            self.min_key_length = QSpinBox()
+            self.min_key_length.setRange(1, 20)
+            self.min_key_length.setValue(3)
+            self.min_key_length.setFixedHeight(30)  # Fix height
+            length_layout.addWidget(self.min_key_length)
+            length_layout.addWidget(QLabel("to"))
+            self.max_key_length = QSpinBox()
+            self.max_key_length.setRange(1, 20)
+            self.max_key_length.setValue(8)
+            self.max_key_length.setFixedHeight(30)  # Fix height
+            length_layout.addWidget(self.max_key_length)
+            brute_layout.addLayout(length_layout)
+            
+            # Character set selection
+            charset_layout = QHBoxLayout()
+            charset_layout.addWidget(QLabel("Character Set:"))
+            self.charset_combo = QComboBox()
+            self.charset_combo.setFixedHeight(30)  # Fix height
+            self.charset_combo.addItems([
+                "Lowercase [a-z]",
+                "Uppercase [A-Z]",
+                "Alpha [A-Za-z]",
+                "Alphanumeric [A-Za-z0-9]",
+                "ASCII Printable"
+            ])
+            charset_layout.addWidget(self.charset_combo)
+            brute_layout.addLayout(charset_layout)
+            
+            # Progress section
+            progress_layout = QHBoxLayout()
+            self.progress_label = QLabel("Progress:")
+            self.progress_percent = QLabel("0%")
+            progress_layout.addWidget(self.progress_label)
+            progress_layout.addWidget(self.progress_percent)
+            progress_layout.addStretch()
+            brute_layout.addLayout(progress_layout)
+            
+            # Brute force controls group
+            controls_group = QGroupBox("Brute Force Controls")
+            controls_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            controls_layout = QVBoxLayout(controls_group)
+            
+            # Buttons container
+            buttons_layout = QHBoxLayout()
+            buttons_layout.setSpacing(10)
+            
+            # Start button
+            start_btn = QPushButton("Start Brute Force")
+            start_btn.setFixedHeight(40)
+            start_btn.setMinimumWidth(150)
+            start_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #2ecc71;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #27ae60;
+                }
+                QPushButton:pressed {
+                    background-color: #219a52;
+                }
+            """)
+            start_btn.clicked.connect(self.brute_force_vigenere)
+            
+            # Stop button
+            self.stop_brute_force_btn = QPushButton("Stop")
+            self.stop_brute_force_btn.setFixedHeight(40)
+            self.stop_brute_force_btn.setMinimumWidth(150)
+            self.stop_brute_force_btn.setEnabled(False)
+            self.stop_brute_force_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #e74c3c;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #c0392b;
+                }
+                QPushButton:pressed {
+                    background-color: #a93226;
+                }
+                QPushButton:disabled {
+                    background-color: #95a5a6;
+                }
+            """)
+            self.stop_brute_force_btn.clicked.connect(self.stop_brute_force)
+            
+            buttons_layout.addWidget(start_btn)
+            buttons_layout.addWidget(self.stop_brute_force_btn)
+            controls_layout.addLayout(buttons_layout)
+            
+                        # Add controls group to main layout
+            brute_layout.addWidget(controls_group)
+
+            # Add spacer bar at the bottom
+            spacer_bar = QWidget()
+            spacer_bar.setFixedHeight(2)
+            spacer_bar.setStyleSheet("background-color: #2d2d2d;")
+            spacer_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            brute_layout.addWidget(spacer_bar)
+            
+            # Add stretch to ensure proper scrolling
+            brute_layout.addStretch()
+
+            brute_group.setLayout(brute_layout)
+            scroll_layout.addWidget(brute_group)
+            scroll_layout.addStretch()  # Add stretch at the bottom
+            
+            # Set the scroll content
+            scroll_area.setWidget(scroll_content)
+            
+            # Add scroll area to main options layout
+            options_layout.addWidget(scroll_area)
+            
+            self.cipher_options_layout.addWidget(options_container)
         elif cipher in ["AES (ECB)", "AES (CBC)"]:
             self.cipher_options_layout.addWidget(QLabel("Key:"))
             self.cipher_options_layout.addWidget(self.aes_key_input)
@@ -2324,6 +2557,431 @@ class MainWindow(QMainWindow):
         if offset is not None:
             self.edit_offset.setText(f"{offset:x}")
             self.save_btn.setEnabled(True)  # Enable save button when edits are made
+
+    def create_convert_tab(self):
+        """Create the Convert tab for base conversions"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(15)
+        
+        # Input section
+        input_group = QGroupBox("Input")
+        input_layout = QVBoxLayout()
+        
+        # Input format selection
+        input_format_layout = QHBoxLayout()
+        input_format_layout.addWidget(QLabel("Input Format:"))
+        self.input_format_combo = QComboBox()
+        self.input_format_combo.addItems([
+            "Text", "Hex", "Decimal", "Binary", "Octal",
+            "Base64", "Base32", "Base16", "Base85"
+        ])
+        input_format_layout.addWidget(self.input_format_combo)
+        input_layout.addLayout(input_format_layout)
+        
+        # Input text
+        self.convert_input = QTextEdit()
+        self.convert_input.setPlaceholderText("Enter input data...")
+        self.convert_input.setMaximumHeight(100)
+        input_layout.addWidget(self.convert_input)
+        
+        input_group.setLayout(input_layout)
+        layout.addWidget(input_group)
+        
+        # Output section
+        output_group = QGroupBox("Output")
+        output_layout = QVBoxLayout()
+        
+        # Output format selection
+        output_format_layout = QHBoxLayout()
+        output_format_layout.addWidget(QLabel("Output Format:"))
+        self.output_format_combo = QComboBox()
+        self.output_format_combo.addItems([
+            "Text", "Hex", "Decimal", "Binary", "Octal",
+            "Base64", "Base32", "Base16", "Base85"
+        ])
+        output_format_layout.addWidget(self.output_format_combo)
+        output_layout.addLayout(output_format_layout)
+        
+        # Convert button
+        convert_btn = QPushButton("Convert")
+        convert_btn.clicked.connect(self.process_conversion)
+        output_layout.addWidget(convert_btn)
+        
+        # Output text
+        self.convert_output = QTextEdit()
+        self.convert_output.setReadOnly(True)
+        self.convert_output.setPlaceholderText("Conversion result will appear here...")
+        output_layout.addWidget(self.convert_output)
+        
+        output_group.setLayout(output_layout)
+        layout.addWidget(output_group)
+        
+        # Smart Detection section
+        detection_group = QGroupBox("Smart Detection")
+        detection_layout = QVBoxLayout()
+        
+        # Results area
+        self.convert_detection = QTextEdit()
+        self.convert_detection.setReadOnly(True)
+        self.convert_detection.setPlaceholderText("Automatic detection results will appear here...")
+        detection_layout.addWidget(self.convert_detection)
+        
+        # Deep analysis button
+        deep_analysis_btn = QPushButton("Try Deep Analysis")
+        deep_analysis_btn.clicked.connect(self.try_deep_analysis)
+        detection_layout.addWidget(deep_analysis_btn)
+        
+        detection_group.setLayout(detection_layout)
+        layout.addWidget(detection_group)
+        
+        # Connect signals for real-time analysis
+        self.convert_input.textChanged.connect(self.update_conversion_analysis)
+        
+        return widget
+
+    def process_conversion(self):
+        """Process the conversion between different formats"""
+        input_text = self.convert_input.toPlainText().strip()
+        if not input_text:
+            return
+            
+        input_format = self.input_format_combo.currentText()
+        output_format = self.output_format_combo.currentText()
+        
+        try:
+            # First convert input to bytes
+            input_bytes = self.format_to_bytes(input_text, input_format)
+            if input_bytes is None:
+                raise ValueError(f"Invalid {input_format} input")
+                
+            # Then convert bytes to output format
+            result = self.bytes_to_format(input_bytes, output_format)
+            if result is None:
+                raise ValueError(f"Could not convert to {output_format}")
+                
+            self.convert_output.setPlainText(result)
+            
+        except Exception as e:
+            self.convert_output.setPlainText(f"Error: {str(e)}")
+
+    def format_to_bytes(self, text: str, format_type: str) -> Optional[bytes]:
+        """Convert input format to bytes"""
+        try:
+            if format_type == "Text":
+                return text.encode()
+            elif format_type == "Hex":
+                return bytes.fromhex(text.replace(" ", ""))
+            elif format_type == "Decimal":
+                # Handle large decimal numbers
+                if text.isdigit():  # Single large number
+                    try:
+                        # Convert to hex first, then to bytes
+                        hex_str = hex(int(text))[2:]  # Remove '0x' prefix
+                        # Pad with 0 if odd length
+                        if len(hex_str) % 2:
+                            hex_str = '0' + hex_str
+                        return bytes.fromhex(hex_str)
+                    except ValueError:
+                        pass
+                # Try original method for space-separated bytes
+                return bytes(int(x) for x in text.split())
+            elif format_type == "Binary":
+                binary = text.replace(" ", "")
+                return bytes(int(binary[i:i+8], 2) for i in range(0, len(binary), 8))
+            elif format_type == "Octal":
+                octal = text.replace(" ", "")
+                return bytes(int(oct_str, 8) for oct_str in [octal[i:i+3] for i in range(0, len(octal), 3)])
+            elif format_type == "Base64":
+                return base64.b64decode(text)
+            elif format_type == "Base32":
+                return base64.b32decode(text)
+            elif format_type == "Base16":
+                return base64.b16decode(text.upper())
+            elif format_type == "Base85":
+                return base64.b85decode(text)
+        except Exception as e:
+            raise ValueError(f"Invalid {format_type} input: {str(e)}")
+        return None
+
+    def bytes_to_format(self, data: bytes, format_type: str) -> Optional[str]:
+        """Convert bytes to output format"""
+        try:
+            if format_type == "Text":
+                return data.decode('utf-8', errors='replace')
+            elif format_type == "Hex":
+                hex_str = binascii.hexlify(data).decode().upper()
+                return ' '.join(hex_str[i:i+2] for i in range(0, len(hex_str), 2))
+            elif format_type == "Decimal":
+                return ' '.join(str(b) for b in data)
+            elif format_type == "Binary":
+                return ' '.join(format(b, '08b') for b in data)
+            elif format_type == "Octal":
+                return ' '.join(format(b, '03o') for b in data)
+            elif format_type == "Base64":
+                return base64.b64encode(data).decode()
+            elif format_type == "Base32":
+                return base64.b32encode(data).decode()
+            elif format_type == "Base16":
+                return base64.b16encode(data).decode()
+            elif format_type == "Base85":
+                return base64.b85encode(data).decode()
+        except Exception as e:
+            raise ValueError(f"Could not convert to {format_type}: {str(e)}")
+        return None
+
+    def update_conversion_analysis(self):
+        """Update real-time analysis of input"""
+        text = self.convert_input.toPlainText().strip()
+        if not text:
+            self.convert_detection.clear()
+            return
+            
+        results = []
+        results.append("=== Quick Analysis ===")
+        
+        # Try to detect format
+        if all(c in '0123456789ABCDEFabcdef ' for c in text):
+            results.append("✓ Looks like hexadecimal")
+            try:
+                decoded = bytes.fromhex(text.replace(" ", ""))
+                results.append(f"  → ASCII: {decoded.decode('ascii', errors='replace')}")
+            except:
+                pass
+                
+        if all(c in '01 ' for c in text):
+            results.append("✓ Looks like binary")
+            try:
+                binary = text.replace(" ", "")
+                decoded = bytes(int(binary[i:i+8], 2) for i in range(0, len(binary), 8))
+                results.append(f"  → ASCII: {decoded.decode('ascii', errors='replace')}")
+            except:
+                pass
+                
+        if all(c.isdigit() or c.isspace() for c in text):
+            results.append("✓ Looks like decimal")
+            try:
+                decoded = bytes(int(x) for x in text.split())
+                results.append(f"  → ASCII: {decoded.decode('ascii', errors='replace')}")
+            except:
+                pass
+                
+        # Try base64
+        if set(text).issubset(set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')):
+            results.append("✓ Could be Base64")
+            try:
+                decoded = base64.b64decode(text)
+                results.append(f"  → ASCII: {decoded.decode('ascii', errors='replace')}")
+            except:
+                pass
+        
+        self.convert_detection.setPlainText('\n'.join(results))
+
+    def try_deep_analysis(self):
+        """Perform deep analysis trying multiple conversion combinations"""
+        text = self.convert_input.toPlainText().strip()
+        if not text:
+            return
+            
+        results = []
+        results.append("=== Deep Analysis ===")
+        results.append("Trying multiple conversion combinations...")
+        
+        # List of formats to try
+        formats = ["Hex", "Decimal", "Binary", "Base64", "Base32", "Base16", "Base85"]
+        
+        # Try single conversion first
+        results.append("\n= Single Conversion =")
+        for fmt in formats:
+            try:
+                # Convert to bytes
+                data = self.format_to_bytes(text, fmt)
+                if data:
+                    decoded = data.decode('ascii', errors='replace')
+                    if any(32 <= ord(c) <= 126 for c in decoded):  # Contains printable chars
+                        results.append(f"\n{fmt} → ASCII:")
+                        results.append(f"  {decoded}")
+                        
+                        # Check for flag patterns
+                        if re.search(r'[A-Za-z0-9_]{2,8}{[^}]+}', decoded):
+                            results.append("  ⚑ Possible flag format detected!")
+            except:
+                continue
+        
+        # Try double conversion
+        results.append("\n= Double Conversion =")
+        for fmt1 in formats:
+            for fmt2 in formats:
+                if fmt1 != fmt2:
+                    try:
+                        # First conversion
+                        data1 = self.format_to_bytes(text, fmt1)
+                        if data1:
+                            # Convert to intermediate format
+                            inter = self.bytes_to_format(data1, fmt2)
+                            if inter:
+                                # Second conversion
+                                data2 = self.format_to_bytes(inter, fmt2)
+                                if data2:
+                                    decoded = data2.decode('ascii', errors='replace')
+                                    if any(32 <= ord(c) <= 126 for c in decoded):
+                                        results.append(f"\n{fmt1} → {fmt2} → ASCII:")
+                                        results.append(f"  {decoded}")
+                                        
+                                        # Check for flag patterns
+                                        if re.search(r'[A-Za-z0-9_]{2,8}{[^}]+}', decoded):
+                                            results.append("  ⚑ Possible flag format detected!")
+                    except:
+                        continue
+        
+        self.convert_detection.setPlainText('\n'.join(results))
+
+    def brute_force_vigenere(self):
+        """Brute force Vigenère cipher looking for a specific format"""
+        self.brute_force_running = True
+        self.stop_brute_force_btn.setEnabled(True)
+        
+        text = self.input_text.toPlainText()
+        if not text:
+            QMessageBox.warning(self, "Warning", "Please enter text to decrypt")
+            return
+            
+        pattern = self.vigenere_pattern.text()
+        if not pattern:
+            QMessageBox.warning(self, "Warning", "Please enter a format pattern to search for")
+            return
+            
+        # Convert pattern to regex
+        if "{...}" in pattern:
+            pattern = pattern.replace("{...}", "{[^}]+}")
+        if "{.*}" in pattern:
+            pattern = pattern.replace("{.*}", "{.*?}")
+        pattern = re.compile(pattern)
+        
+        # Get character set
+        charset = self.charset_combo.currentText()
+        if charset == "Lowercase [a-z]":
+            chars = string.ascii_lowercase
+        elif charset == "Uppercase [A-Z]":
+            chars = string.ascii_uppercase
+        elif charset == "Alpha [A-Za-z]":
+            chars = string.ascii_letters
+        elif charset == "Alphanumeric [A-Za-z0-9]":
+            chars = string.ascii_letters + string.digits
+        else:  # ASCII Printable
+            chars = string.printable
+            
+        min_len = self.min_key_length.value()
+        max_len = self.max_key_length.value()
+        
+        self.output_text.setPlainText("Brute forcing Vigenère cipher...\n")
+        QApplication.processEvents()  # Update UI
+        
+        # Calculate total combinations for progress tracking
+        total_combinations = sum(len(chars) ** length for length in range(min_len, max_len + 1))
+        combinations_processed = 0
+        
+        # Reset progress
+        self.progress_percent.setText("0%")
+        
+        def try_key(key):
+            try:
+                decrypted = vigenere_cipher(text, ''.join(key), decrypt=True)
+                if pattern.search(decrypted):
+                    return decrypted
+            except:
+                pass
+            return None
+        
+        found = False
+        for length in range(min_len, max_len + 1):
+            if not self.brute_force_running:
+                break
+                
+            self.output_text.append(f"\nTrying keys of length {length}...")
+            QApplication.processEvents()  # Update UI
+            
+            # Generate possible keys
+            length_combinations = len(chars) ** length
+            keys_in_length = 0
+            
+            for key_tuple in product(chars, repeat=length):
+                if not self.brute_force_running:
+                    break
+                    
+                key = ''.join(key_tuple)
+                result = try_key(key)
+                
+                # Update progress
+                keys_in_length += 1
+                combinations_processed += 1
+                progress = int((combinations_processed / total_combinations) * 100)
+                self.progress_percent.setText(f"{progress}%")
+                
+                # Update UI every 1000 combinations
+                if keys_in_length % 1000 == 0:
+                    QApplication.processEvents()
+                
+                if result:
+                    self.output_text.append(f"\nFound matching key: {key}")
+                    self.output_text.append(f"Decrypted text: {result}\n")
+                    self.key_input.setText(key)  # Set the found key
+                    found = True
+                    break
+            
+            if found:
+                break
+        
+        # Ensure progress shows 100% when done
+        self.progress_percent.setText("100%")
+        self.stop_brute_force_btn.setEnabled(False)
+        self.brute_force_running = False
+        
+        if not found and self.brute_force_running:
+            self.output_text.append("\nNo matching keys found.")
+
+    def stop_brute_force(self):
+        """Stop the brute force process"""
+        self.brute_force_running = False
+        self.stop_brute_force_btn.setEnabled(False)
+        self.output_text.append("\nBrute force stopped by user.")
+
+    def show_pattern_help(self):
+        """Show help dialog for format patterns"""
+        help_dialog = QMessageBox(self)
+        help_dialog.setWindowTitle("Format Pattern Help")
+        help_dialog.setIcon(QMessageBox.Icon.Information)
+        
+        help_text = """
+        <h3>Format Pattern Guide</h3>
+        <p>The format pattern is used to identify when a correct decryption is found. Here are the supported patterns:</p>
+        
+        <h4>Basic Patterns:</h4>
+        <ul>
+            <li><code>flag{...}</code> - Matches 'flag{' followed by any content until '}'</li>
+            <li><code>CTF{...}</code> - Matches 'CTF{' followed by any content until '}'</li>
+            <li><code>key{...}</code> - Matches 'key{' followed by any content until '}'</li>
+        </ul>
+        
+        <h4>Advanced Patterns:</h4>
+        <ul>
+            <li><code>flag{.*}</code> - More flexible matching of any characters</li>
+            <li><code>flag{[a-f0-9]+}</code> - Match only hex characters</li>
+            <li><code>CTF{[A-Za-z0-9_]+}</code> - Match alphanumeric and underscore</li>
+        </ul>
+        
+        <h4>Tips:</h4>
+        <ul>
+            <li>Use {...} for standard capture of any content</li>
+            <li>Use {.*} for more flexible matching</li>
+            <li>Use {[chars]} to specify exact characters to match</li>
+            <li>The pattern is case-sensitive</li>
+        </ul>
+        """
+        
+        help_dialog.setText(help_text)
+        help_dialog.setTextFormat(Qt.TextFormat.RichText)
+        help_dialog.exec()
 
 def main():
     app = QApplication(sys.argv)
