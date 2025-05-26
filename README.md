@@ -1,9 +1,12 @@
+<img src="./misc/banner.webp">
+
 # CTF Swiss Army Knife
 
 An all-in-one CTF (Capture The Flag) solving tool that combines various utilities commonly needed in CTF challenges. This tool provides a modern, user-friendly GUI interface for various CTF-related tasks.
 
+<br/>
 
-## Features
+# <img src="./misc/py.gif" width=60 height=60>  Features
 
 ### Cryptography
 - Classical Ciphers
