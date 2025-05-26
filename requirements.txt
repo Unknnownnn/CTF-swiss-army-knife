@@ -1,0 +1,37 @@
+PyQt6>=6.4.0
+qt-material>=2.12
+numpy>=1.21.0
+matplotlib>=3.5.0
+scipy>=1.7.0
+pycryptodome>=3.15.0
+base58>=2.1.1
+base32hex>=1.0.2
+base91>=1.0.1
+
+# Optional tools - comment out if not needed
+# Image steganography
+pillow>=10.0.0
+stegano>=0.11.1
+
+# Network and web tools
+requests>=2.31.0
+scapy>=2.5.0
+beautifulsoup4>=4.12.0
+
+# Forensics tools
+python-magic>=0.4.27; sys_platform != 'win32'
+python-magic-bin>=0.4.14; sys_platform == 'win32'
+binwalk>=2.1.0
+exifread>=3.3.1
+filetype>=1.2.0
+
+# Archive handling
+py7zr>=0.22.0
+rarfile>=4.2
+
+# Platform-specific tools
+steghide>=0.5.1; sys_platform != 'win32'
+zsteg>=0.2.10; sys_platform != 'win32'
+
+#AI
+langdetect
