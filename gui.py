@@ -4,9 +4,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget,
                            QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
                            QLineEdit, QTextEdit, QFileDialog, QComboBox,
                            QSpinBox, QMessageBox, QGroupBox, QRadioButton,
-                           QScrollArea, QCheckBox, QSlider)
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
+                           QScrollArea, QCheckBox, QSlider, QStackedWidget)
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QSize
+from PyQt6.QtGui import QPixmap, QIcon
 from qt_material import apply_stylesheet
 import matplotlib.pyplot as plt
 import numpy as np
@@ -33,27 +33,335 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CTF Swiss Army Knife")
-        self.setMinimumSize(800, 600)
-        
-        # Initialize AI agent
-        self.ai_agent = CryptoAIAgent()
+        self.setMinimumSize(1200, 800)
         
         # Create the main widget and layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
-        layout = QVBoxLayout(main_widget)
+        main_layout = QHBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        # Create tab widget
-        tabs = QTabWidget()
-        layout.addWidget(tabs)
+        # Create sidebar container
+        self.sidebar_container = QWidget()
+        self.sidebar_container.setObjectName("sidebarContainer")
+        self.sidebar_container.setFixedWidth(200)  # Initial expanded width
+        sidebar_container_layout = QVBoxLayout(self.sidebar_container)
+        sidebar_container_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_container_layout.setSpacing(0)
         
-        # Create tabs for different tools
-        tabs.addTab(self.create_auto_tab(), "AUTO")  # Add AUTO tab first
-        tabs.addTab(self.create_crypto_tab(), "Cryptography")
-        tabs.addTab(self.create_stego_tab(), "Image Steganography")
-        tabs.addTab(self.create_audio_stego_tab(), "Audio Steganography ")
-        tabs.addTab(self.create_hex_editor_tab(), "Hex Editor")
-        tabs.addTab(self.create_forensics_tab(), "Forensics")
+        # Create sidebar
+        self.sidebar = QWidget()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar_layout = QVBoxLayout(self.sidebar)
+        self.sidebar_layout.setContentsMargins(0, 20, 0, 20)
+        self.sidebar_layout.setSpacing(10)
+        
+        # Add toggle button at the top
+        self.toggle_button = QPushButton("≡")
+        self.toggle_button.setObjectName("sidebarToggle")
+        self.toggle_button.setFixedHeight(40)
+        self.toggle_button.clicked.connect(self.toggle_sidebar)
+        self.sidebar_layout.addWidget(self.toggle_button)
+        
+        # Add sidebar to container
+        sidebar_container_layout.addWidget(self.sidebar)
+        
+        # Add sidebar container to main layout
+        main_layout.addWidget(self.sidebar_container)
+        
+        # Create stacked widget for content
+        self.content_stack = QStackedWidget()
+        self.content_stack.setObjectName("contentStack")
+        main_layout.addWidget(self.content_stack)
+        
+        # Add pages to stack
+        self.content_stack.addWidget(self.create_auto_tab())
+        self.content_stack.addWidget(self.create_crypto_tab())
+        self.content_stack.addWidget(self.create_stego_tab())
+        self.content_stack.addWidget(self.create_audio_stego_tab())
+        self.content_stack.addWidget(self.create_hex_editor_tab())
+        self.content_stack.addWidget(self.create_forensics_tab())
+        
+        # Create sidebar buttons with icons
+        self.create_sidebar_button("AUTO", "", 0)
+        self.create_sidebar_button("Cryptography", "", 1)
+        self.create_sidebar_button("Image Stego", "", 2)
+        self.create_sidebar_button("Audio Stego", "", 3)
+        self.create_sidebar_button("Hex Editor", "", 4)
+        self.create_sidebar_button("Forensics", "", 5)
+        
+        # Add stretch to push content to top
+        self.sidebar_layout.addStretch()
+        
+        # Initialize sidebar state
+        self.sidebar_expanded = True
+        self.is_animating = False
+        
+        # Create width animation
+        self.width_animation = QPropertyAnimation(self.sidebar_container, b"minimumWidth")
+        self.width_animation.setDuration(167)  # Approximately 60 FPS for 10 frames
+        
+        # Use a custom easing curve for natural motion
+        custom_curve = QEasingCurve(QEasingCurve.Type.OutQuint)  # Changed to OutQuint for smoother motion
+        custom_curve.setAmplitude(1.0)
+        custom_curve.setPeriod(0.3)
+        self.width_animation.setEasingCurve(custom_curve)
+        
+        # Connect animation finished signal
+        self.width_animation.finished.connect(self.on_animation_finished)
+        
+        # Set stylesheet
+        self.set_dark_theme()
+        
+        # Initialize AI agent
+        self.ai_agent = CryptoAIAgent()
+
+    def create_sidebar_button(self, text, icon, index):
+        """Create a sidebar button with icon and text"""
+        btn = QPushButton(text)
+        btn.setObjectName("sidebarButton")
+        btn.setFixedHeight(40)
+        
+        # Map tab names to icon files
+        icon_mapping = {
+            "AUTO": "auto.ico",
+            "Cryptography": "crypto.ico",
+            "Image Stego": "imgsteg.ico",
+            "Audio Stego": "audio.ico",
+            "Hex Editor": "hex.ico",
+            "Forensics": "foren.ico"
+        }
+        
+        # Set icon from file
+        if text in icon_mapping:
+            icon_path = os.path.join(os.path.dirname(__file__), "icons", icon_mapping[text])
+            if os.path.exists(icon_path):
+                btn.setIcon(QIcon(icon_path))
+                btn.setIconSize(QSize(24, 24))
+        
+        btn.clicked.connect(lambda: self.content_stack.setCurrentIndex(index))
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setProperty("index", index)
+        self.sidebar_layout.addWidget(btn)
+
+    def toggle_sidebar(self):
+        """Toggle sidebar expansion with smooth animation"""
+        if self.is_animating:
+            return
+            
+        self.is_animating = True
+        current_width = self.sidebar_container.width()
+        
+        if self.sidebar_expanded:
+            # Collapse
+            self.width_animation.setStartValue(current_width)
+            self.width_animation.setEndValue(60)
+            # Update button texts to show only icons
+            for i in range(1, self.sidebar_layout.count() - 1):
+                widget = self.sidebar_layout.itemAt(i).widget()
+                if isinstance(widget, QPushButton):
+                    widget.setText("")  # Clear text, keep icon
+        else:
+            # Expand
+            self.width_animation.setStartValue(current_width)
+            self.width_animation.setEndValue(200)
+            # Restore button texts
+            for i in range(1, self.sidebar_layout.count() - 1):
+                widget = self.sidebar_layout.itemAt(i).widget()
+                if isinstance(widget, QPushButton):
+                    index = widget.property("index")
+                    labels = ["AUTO", "Cryptography", "Image Stego", "Audio Stego", "Hex Editor", "Forensics"]
+                    widget.setText(labels[index])
+        
+        self.width_animation.start()
+        self.toggle_button.setText("≡" if not self.sidebar_expanded else "»")
+
+    def on_animation_finished(self):
+        """Handle animation completion"""
+        self.sidebar_expanded = not self.sidebar_expanded
+        self.is_animating = False
+
+    def set_dark_theme(self):
+        # Update the stylesheet to include new sidebar animations and toggle button
+        self.setStyleSheet("""
+            QMainWindow, QWidget {
+                background-color: #212121;
+            }
+            #sidebarContainer {
+                background-color: #141414;
+                border-right: 2px solid #2d2d2d;
+            }
+            #sidebar {
+                background-color: transparent;
+            }
+            #sidebarButton {
+                background-color: transparent;
+                border: none;
+                color: #888888;
+                font-size: 16px;
+                text-align: left;
+                padding: 8px 15px;
+                margin: 2px 5px;
+                border-radius: 6px;
+                icon-size: 24px;
+            }
+            #sidebarButton:hover {
+                background-color: #2d2d2d;
+                color: #ffffff;
+            }
+            #sidebarButton:checked {
+                background-color: #2d2d2d;
+                color: #ffffff;
+            }
+            #sidebarToggle {
+                background-color: transparent;
+                border: none;
+                color: #888888;
+                font-size: 24px;
+                padding: 5px;
+                margin: 2px 5px;
+                border-radius: 6px;
+            }
+            #sidebarToggle:hover {
+                background-color: #2d2d2d;
+                color: #ffffff;
+            }
+            QPushButton {
+                padding-left: 15px;  /* Add consistent padding for icon alignment */
+            }
+            QPushButton:hover {
+                background-color: #2d2d2d;
+            }
+            #contentStack {
+                background-color: #1a1a1a;
+            }
+            QGroupBox {
+                background-color: #212121;
+                border: 1px solid #2d2d2d;
+                border-radius: 8px;
+                margin-top: 30px;
+                padding: 20px;
+                color: #ffffff;
+            }
+            QGroupBox::title {
+                color: #ffffff;
+                font-weight: bold;
+                font-size: 16px;
+                padding: 0 15px;
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                margin-top: 15px;
+                background-color: transparent;
+            }
+            QPushButton {
+                background-color: #2d2d2d;
+                border: 1px solid #3d3d3d;
+                border-radius: 6px;
+                color: #ffffff;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #3d3d3d;
+                border: 1px solid #4d4d4d;
+            }
+            QPushButton:pressed {
+                background-color: #4d4d4d;
+                border: 1px solid #5d5d5d;
+            }
+            QLineEdit, QTextEdit {
+                background-color: #141414;
+                border: 1px solid #2d2d2d;
+                border-radius: 6px;
+                color: #ffffff;
+                padding: 8px;
+                selection-background-color: #3d3d3d;
+            }
+            QComboBox {
+                background-color: #141414;
+                border: 1px solid #2d2d2d;
+                border-radius: 6px;
+                color: #ffffff;
+                padding: 8px;
+                selection-background-color: #3d3d3d;
+            }
+            QLineEdit:focus, QTextEdit:focus, QComboBox:focus {
+                border: 1px solid #4d4d4d;
+                background-color: #1a1a1a;
+                
+            }
+            QLineEdit:hover, QTextEdit:hover, QComboBox:hover {
+                border: 1px solid #3d3d3d;
+                background-color: #1a1a1a;
+            }
+            QLabel {
+                color: #ffffff;
+                font-size: 13px;
+                background-color: #212121;
+            }
+            QLabel[heading="true"] {
+                font-size: 28px;
+                font-weight: bold;
+                padding: 10px 0;
+            }
+            QCheckBox {
+                color: #ffffff;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 20px;
+                height: 20px;
+                border-radius: 4px;
+                border: 2px solid #2d2d2d;
+                background-color: #141414;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #3d3d3d;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #3d3d3d;
+                border: 2px solid #4d4d4d;
+            }
+            QScrollArea {
+                border: none;
+                background-color: transparent;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background-color: #141414;
+                width: 10px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #2d2d2d;
+                min-height: 20px;
+                border-radius: 5px;
+                
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #3d3d3d;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QTabWidget::pane {
+                border: 1px solid #2d2d2d;
+                border-radius: 6px;
+            }
+            QTabBar::tab {
+                background-color: #141414;
+                color: #888888;
+                border: 1px solid #2d2d2d;
+                padding: 8px 16px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: #2d2d2d;
+                color: #ffffff;
+                border-bottom: 2px solid #4d4d4d;
+            }
+        """)
         
     def create_auto_tab(self):
         """Create the AUTO tab for automatic analysis"""
@@ -749,22 +1057,45 @@ class MainWindow(QMainWindow):
         
     def create_hex_editor_tab(self):
         widget = QWidget()
-        layout = QVBoxLayout(widget)
+        main_layout = QVBoxLayout(widget)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         
-        # File operations
+        # Create a scroll area for the entire content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # Create a container widget for all content
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+        layout.setSpacing(10)
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        # File operations with fixed width
         file_group = QGroupBox("File Operations")
+        file_group.setMinimumWidth(400)
         file_layout = QHBoxLayout()
+        file_layout.setContentsMargins(10, 10, 10, 10)
         
         load_btn = QPushButton("Load File")
-        save_btn = QPushButton("Save As")
+        load_btn.setFixedSize(100, 40)
+        self.save_btn = QPushButton("Save As")  # Make it instance variable to control enabled state
+        self.save_btn.setFixedSize(100, 40)
+        self.save_btn.setEnabled(False)  # Disable initially
+        
         file_layout.addWidget(load_btn)
-        file_layout.addWidget(save_btn)
+        file_layout.addWidget(self.save_btn)
+        file_layout.addStretch()
         file_group.setLayout(file_layout)
         layout.addWidget(file_group)
         
-        # Magic number suggestions
+        # Magic number suggestions with fixed width
         self.magic_group = QGroupBox("File Format Detection")
+        self.magic_group.setMinimumWidth(400)
         magic_layout = QVBoxLayout()
+        magic_layout.setContentsMargins(10, 10, 10, 10)
+        magic_layout.setSpacing(10)  # Add spacing between elements
         
         self.format_label = QLabel("No file loaded")
         magic_layout.addWidget(self.format_label)
@@ -772,16 +1103,22 @@ class MainWindow(QMainWindow):
         # Add auto-fix button
         auto_fix_layout = QHBoxLayout()
         self.auto_fix_btn = QPushButton("Auto-Fix Header")
+        self.auto_fix_btn.setFixedSize(200, 40)  # Increased width
         self.auto_fix_btn.setVisible(False)
         self.auto_fix_btn.clicked.connect(self.auto_fix_header)
         auto_fix_layout.addWidget(self.auto_fix_btn)
+        auto_fix_layout.addStretch()
         magic_layout.addLayout(auto_fix_layout)
         
         self.header_combo = QComboBox()
+        self.header_combo.setFixedHeight(40)
+        self.header_combo.setMinimumWidth(300)  # Set minimum width for dropdown
         self.header_combo.setVisible(False)
+        self.header_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)  # Adjust to content width
         magic_layout.addWidget(self.header_combo)
         
         self.apply_header_btn = QPushButton("Apply Selected Header")
+        self.apply_header_btn.setFixedSize(200, 40)  # Increased width to match auto-fix button
         self.apply_header_btn.setVisible(False)
         self.apply_header_btn.clicked.connect(self.apply_magic_header)
         magic_layout.addWidget(self.apply_header_btn)
@@ -789,21 +1126,35 @@ class MainWindow(QMainWindow):
         self.magic_group.setLayout(magic_layout)
         layout.addWidget(self.magic_group)
         
-        # Hex view with editing support
+        # Hex view container
+        hex_group = QGroupBox("Hex View")
+        hex_group.setMinimumWidth(400)
+        hex_layout = QVBoxLayout()
+        hex_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Hex view with fixed height
         self.hex_view = QTextEdit()
         self.hex_view.setFont(QApplication.font())
+        self.hex_view.setMinimumHeight(300)  # Fixed minimum height
         self.hex_view.textChanged.connect(self.on_hex_edit)
-        layout.addWidget(self.hex_view)
+        hex_layout.addWidget(self.hex_view)
         
-        # Operations group
+        hex_group.setLayout(hex_layout)
+        layout.addWidget(hex_group)
+        
+        # Operations group with fixed width
         ops_group = QGroupBox("Operations")
+        ops_group.setMinimumWidth(400)
         ops_layout = QVBoxLayout()
+        ops_layout.setContentsMargins(10, 10, 10, 10)
         
         # Pattern search
         search_layout = QHBoxLayout()
         self.pattern_input = QLineEdit()
+        self.pattern_input.setFixedHeight(40)
         self.pattern_input.setPlaceholderText("Enter pattern (hex or text)...")
         search_btn = QPushButton("Find Pattern")
+        search_btn.setFixedSize(100, 40)
         search_layout.addWidget(self.pattern_input)
         search_layout.addWidget(search_btn)
         ops_layout.addLayout(search_layout)
@@ -811,8 +1162,10 @@ class MainWindow(QMainWindow):
         # Encoding operations
         encoding_layout = QHBoxLayout()
         self.encoding_combo = QComboBox()
+        self.encoding_combo.setFixedHeight(40)
         self.encoding_combo.addItems(['hex', 'ascii', 'utf-8', 'base64'])
         decode_btn = QPushButton("Decode As")
+        decode_btn.setFixedSize(100, 40)
         encoding_layout.addWidget(self.encoding_combo)
         encoding_layout.addWidget(decode_btn)
         ops_layout.addLayout(encoding_layout)
@@ -820,10 +1173,13 @@ class MainWindow(QMainWindow):
         # Edit operations
         edit_layout = QHBoxLayout()
         self.edit_offset = QLineEdit()
+        self.edit_offset.setFixedHeight(40)
         self.edit_offset.setPlaceholderText("Offset (hex)")
         self.edit_value = QLineEdit()
+        self.edit_value.setFixedHeight(40)
         self.edit_value.setPlaceholderText("New value (hex)")
         edit_btn = QPushButton("Edit Bytes")
+        edit_btn.setFixedSize(100, 40)
         edit_layout.addWidget(self.edit_offset)
         edit_layout.addWidget(self.edit_value)
         edit_layout.addWidget(edit_btn)
@@ -832,21 +1188,169 @@ class MainWindow(QMainWindow):
         ops_group.setLayout(ops_layout)
         layout.addWidget(ops_group)
         
-        # Results
-        results_label = QLabel("Results/Decoded Data:")
+        # Results with fixed height
+        results_group = QGroupBox("Results/Decoded Data")
+        results_layout = QVBoxLayout()
         self.hex_results = QTextEdit()
         self.hex_results.setReadOnly(True)
-        layout.addWidget(results_label)
-        layout.addWidget(self.hex_results)
+        self.hex_results.setMinimumHeight(150)  # Fixed minimum height
+        results_layout.addWidget(self.hex_results)
+        results_group.setLayout(results_layout)
+        layout.addWidget(results_group)
+        
+        # Add stretch at the bottom to keep everything aligned to the top
+        layout.addStretch()
+        
+        # Set the content widget in the scroll area
+        scroll.setWidget(content_widget)
+        main_layout.addWidget(scroll)
         
         # Connect signals
         load_btn.clicked.connect(self.load_hex_file)
-        save_btn.clicked.connect(self.save_hex_file)
+        self.save_btn.clicked.connect(self.save_hex_file)
         search_btn.clicked.connect(self.find_hex_pattern)
         decode_btn.clicked.connect(self.decode_hex_data)
         edit_btn.clicked.connect(self.edit_hex_bytes)
         
         return widget
+
+    def on_slider_change(self):
+        """Handle hex view slider change"""
+        if not hasattr(self, 'hex_editor'):
+            return
+            
+        # Calculate position based on slider value
+        total_lines = len(self.hex_editor.data) // 16 + (1 if len(self.hex_editor.data) % 16 else 0)
+        current_line = int((self.hex_slider.value() / 100.0) * total_lines)
+        
+        # Update cursor position
+        cursor = self.hex_view.textCursor()
+        cursor.movePosition(cursor.Start)
+        for _ in range(current_line):
+            cursor.movePosition(cursor.Down)
+        self.hex_view.setTextCursor(cursor)
+        self.hex_view.ensureCursorVisible()
+
+    def update_hex_view(self):
+        """Update the hex view with current data"""
+        if hasattr(self, 'hex_editor'):
+            self.hex_view.setPlainText(self.hex_editor.to_hex())
+
+    def apply_magic_header(self):
+        """Apply selected magic number header"""
+        if not hasattr(self, 'hex_editor'):
+            return
+            
+        current_data = self.header_combo.currentData()
+        if current_data:
+            if self.hex_editor.replace_header(current_data):
+                self.update_hex_view()
+                self.update_magic_suggestions()
+                self.hex_results.setPlainText("Header replaced successfully")
+                self.save_btn.setEnabled(True)  # Enable save button after header change
+            else:
+                self.hex_results.setPlainText("Failed to replace header")
+
+    def auto_fix_header(self):
+        """Automatically fix file header based on extension"""
+        if not hasattr(self, 'hex_editor') or not hasattr(self.hex_editor, 'current_file'):
+            return
+            
+        file_ext = os.path.splitext(self.hex_editor.current_file)[1].lower()
+        
+        # Map extensions to format names
+        ext_to_format = {
+            '.png': 'PNG',
+            '.jpg': 'JPEG',
+            '.jpeg': 'JPEG',
+            '.gif': 'GIF89a',  # Prefer newer GIF format
+            '.pdf': 'PDF',
+            '.zip': 'ZIP',
+            '.rar': 'RAR',
+            '.7z': '7Z',
+            '.gz': 'GZIP',
+            '.bz2': 'BZIP2',
+            '.class': 'CLASS',
+            '.doc': 'DOC',
+            '.mp3': 'MP3',
+            '.mp4': 'MP4',
+            '.wav': 'WAV'
+        }
+        
+        format_name = ext_to_format.get(file_ext)
+        if not format_name:
+            QMessageBox.warning(self, "Warning", "Could not determine format from file extension")
+            return
+            
+        # Get magic number for this format
+        format_info = MagicNumbers.get_format_info(format_name)
+        if not format_info:
+            QMessageBox.warning(self, "Warning", f"No magic number information for {format_name} format")
+            return
+            
+        # Check if current header matches expected
+        current_header = binascii.hexlify(self.hex_editor.data[:len(format_info['header'])//2]).decode().upper()
+        if current_header == format_info['header']:
+            QMessageBox.information(self, "Info", "File header is already correct")
+            return
+            
+        # Ask for confirmation
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setText(f"Fix file header for {format_name} format?")
+        msg.setInformativeText(f"Current header: {current_header}\nExpected header: {format_info['header']}")
+        msg.setWindowTitle("Confirm Header Fix")
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if msg.exec() == QMessageBox.StandardButton.Yes:
+            if self.hex_editor.replace_header(format_info['header']):
+                self.update_hex_view()
+                self.update_magic_suggestions()
+                self.hex_results.setPlainText(f"Successfully fixed header for {format_name} format")
+                self.save_btn.setEnabled(True)  # Enable save button after header change
+            else:
+                self.hex_results.setPlainText("Failed to fix header")
+
+    def save_hex_file(self):
+        if not hasattr(self, 'hex_editor'):
+            QMessageBox.warning(self, "Warning", "No data to save")
+            return
+            
+        # Get detected format for suggesting file extension
+        detected_formats = self.hex_editor.detected_formats
+        suggested_ext = None
+        if detected_formats:
+            # Use the first detected format's extension
+            suggested_ext = detected_formats[0]['extension']
+        
+        # Get original file name without extension
+        if hasattr(self.hex_editor, 'current_file'):
+            base_name = os.path.splitext(os.path.basename(self.hex_editor.current_file))[0]
+        else:
+            base_name = "untitled"
+        
+        # Create file filter based on detected format
+        if suggested_ext:
+            file_filter = f"Detected format (*{suggested_ext});;All files (*.*)"
+            suggested_name = f"{base_name}{suggested_ext}"
+        else:
+            file_filter = "All files (*.*)"
+            suggested_name = base_name
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Save File",
+            suggested_name,
+            file_filter
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'wb') as f:
+                    f.write(self.hex_editor.get_data())
+                QMessageBox.information(self, "Success", "File saved successfully")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
         
     def create_forensics_tab(self):
         widget = QWidget()
@@ -1588,11 +2092,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}")
     
-    def update_hex_view(self):
-        """Update the hex view with current data"""
-        if hasattr(self, 'hex_editor'):
-            self.hex_view.setPlainText(self.hex_editor.to_hex())
-    
     def update_magic_suggestions(self):
         """Update magic number suggestions"""
         if not hasattr(self, 'hex_editor'):
@@ -1624,35 +2123,6 @@ class MainWindow(QMainWindow):
             if not any(header == item.data() for item in [self.header_combo.itemData(i) for i in range(self.header_combo.count())]):
                 self.header_combo.addItem(f"{fmt} - Suggested Header", header)
 
-    def apply_magic_header(self):
-        """Apply selected magic number header"""
-        if not hasattr(self, 'hex_editor'):
-            return
-            
-        current_data = self.header_combo.currentData()
-        if current_data:
-            if self.hex_editor.replace_header(current_data):
-                self.update_hex_view()
-                self.update_magic_suggestions()
-                self.hex_results.setPlainText("Header replaced successfully")
-            else:
-                self.hex_results.setPlainText("Failed to replace header")
-
-    def on_hex_edit(self):
-        """Handle hex view edits"""
-        if not hasattr(self, 'hex_editor'):
-            return
-            
-        # Get cursor position
-        cursor = self.hex_view.textCursor()
-        line = cursor.blockNumber() + 1
-        column = cursor.columnNumber()
-        
-        # Convert position to byte offset
-        offset = self.hex_editor.get_offset_from_position(line, column)
-        if offset is not None:
-            self.edit_offset.setText(f"{offset:x}")
-
     def edit_hex_bytes(self):
         """Edit bytes at specified offset"""
         if not hasattr(self, 'hex_editor'):
@@ -1674,21 +2144,7 @@ class MainWindow(QMainWindow):
                 self.hex_results.setPlainText("Failed to edit bytes")
         except Exception as e:
             self.hex_results.setPlainText(f"Error: {str(e)}")
-
-    def save_hex_file(self):
-        if not hasattr(self, 'hex_editor'):
-            QMessageBox.warning(self, "Warning", "No data to save")
-            return
-            
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save File")
-        if file_path:
-            try:
-                with open(file_path, 'wb') as f:
-                    f.write(self.hex_editor.get_data())
-                QMessageBox.information(self, "Success", "File saved successfully")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
-
+    
     def find_hex_pattern(self):
         if not hasattr(self, 'hex_editor'):
             QMessageBox.warning(self, "Warning", "No data loaded")
@@ -1707,7 +2163,7 @@ class MainWindow(QMainWindow):
                 self.hex_results.setPlainText("Pattern not found")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Search failed: {str(e)}")
-
+    
     def decode_hex_data(self):
         if not hasattr(self, 'hex_editor'):
             QMessageBox.warning(self, "Warning", "No data loaded")
@@ -1853,64 +2309,21 @@ class MainWindow(QMainWindow):
             best_shift = results['sensible_text'][0][0]  # Use the shift from the highest confidence text
             self.shift_slider.setValue(best_shift)
 
-    def auto_fix_header(self):
-        """Automatically fix file header based on extension"""
-        if not hasattr(self, 'hex_editor') or not hasattr(self.hex_editor, 'current_file'):
+    def on_hex_edit(self):
+        """Handle hex view edits"""
+        if not hasattr(self, 'hex_editor'):
             return
             
-        file_ext = os.path.splitext(self.hex_editor.current_file)[1].lower()
+        # Get cursor position
+        cursor = self.hex_view.textCursor()
+        line = cursor.blockNumber() + 1
+        column = cursor.columnNumber()
         
-        # Map extensions to format names
-        ext_to_format = {
-            '.png': 'PNG',
-            '.jpg': 'JPEG',
-            '.jpeg': 'JPEG',
-            '.gif': 'GIF89a',  # Prefer newer GIF format
-            '.pdf': 'PDF',
-            '.zip': 'ZIP',
-            '.rar': 'RAR',
-            '.7z': '7Z',
-            '.gz': 'GZIP',
-            '.bz2': 'BZIP2',
-            '.class': 'CLASS',
-            '.doc': 'DOC',
-            '.mp3': 'MP3',
-            '.mp4': 'MP4',
-            '.wav': 'WAV'
-        }
-        
-        format_name = ext_to_format.get(file_ext)
-        if not format_name:
-            QMessageBox.warning(self, "Warning", "Could not determine format from file extension")
-            return
-            
-        # Get magic number for this format
-        format_info = MagicNumbers.get_format_info(format_name)
-        if not format_info:
-            QMessageBox.warning(self, "Warning", f"No magic number information for {format_name} format")
-            return
-            
-        # Check if current header matches expected
-        current_header = binascii.hexlify(self.hex_editor.data[:len(format_info['header'])//2]).decode().upper()
-        if current_header == format_info['header']:
-            QMessageBox.information(self, "Info", "File header is already correct")
-            return
-            
-        # Ask for confirmation
-        msg = QMessageBox()
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setText(f"Fix file header for {format_name} format?")
-        msg.setInformativeText(f"Current header: {current_header}\nExpected header: {format_info['header']}")
-        msg.setWindowTitle("Confirm Header Fix")
-        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        
-        if msg.exec() == QMessageBox.StandardButton.Yes:
-            if self.hex_editor.replace_header(format_info['header']):
-                self.update_hex_view()
-                self.update_magic_suggestions()
-                self.hex_results.setPlainText(f"Successfully fixed header for {format_name} format")
-            else:
-                self.hex_results.setPlainText("Failed to fix header")
+        # Convert position to byte offset
+        offset = self.hex_editor.get_offset_from_position(line, column)
+        if offset is not None:
+            self.edit_offset.setText(f"{offset:x}")
+            self.save_btn.setEnabled(True)  # Enable save button when edits are made
 
 def main():
     app = QApplication(sys.argv)
