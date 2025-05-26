@@ -13,6 +13,7 @@ import numpy as np
 from scipy.io import wavfile
 import tempfile
 import mimetypes
+import binascii
 
 from modules.crypto.classical import caesar_cipher, vigenere_cipher, rot13, atbash, try_all_caesar_shifts
 from modules.stego.image import analyze_image, extract_data, hide_data
@@ -21,6 +22,7 @@ from modules.stego.audio import (analyze_audio, hide_data_in_audio, extract_data
 from modules.forensics.analyzer import analyze_file
 from modules.forensics.compression import check_compression, extract_compressed
 from modules.utils.hexeditor import HexEditor, detect_encodings
+from modules.utils.magic_numbers import MagicNumbers
 from modules.forensics.external_tools import (run_steghide, run_binwalk, run_stegsolve,
                                           run_zsteg, run_exiftool, run_foremost,
                                           ExternalToolError)
@@ -760,10 +762,37 @@ class MainWindow(QMainWindow):
         file_group.setLayout(file_layout)
         layout.addWidget(file_group)
         
-        # Hex view
+        # Magic number suggestions
+        self.magic_group = QGroupBox("File Format Detection")
+        magic_layout = QVBoxLayout()
+        
+        self.format_label = QLabel("No file loaded")
+        magic_layout.addWidget(self.format_label)
+        
+        # Add auto-fix button
+        auto_fix_layout = QHBoxLayout()
+        self.auto_fix_btn = QPushButton("Auto-Fix Header")
+        self.auto_fix_btn.setVisible(False)
+        self.auto_fix_btn.clicked.connect(self.auto_fix_header)
+        auto_fix_layout.addWidget(self.auto_fix_btn)
+        magic_layout.addLayout(auto_fix_layout)
+        
+        self.header_combo = QComboBox()
+        self.header_combo.setVisible(False)
+        magic_layout.addWidget(self.header_combo)
+        
+        self.apply_header_btn = QPushButton("Apply Selected Header")
+        self.apply_header_btn.setVisible(False)
+        self.apply_header_btn.clicked.connect(self.apply_magic_header)
+        magic_layout.addWidget(self.apply_header_btn)
+        
+        self.magic_group.setLayout(magic_layout)
+        layout.addWidget(self.magic_group)
+        
+        # Hex view with editing support
         self.hex_view = QTextEdit()
         self.hex_view.setFont(QApplication.font())
-        self.hex_view.setReadOnly(True)
+        self.hex_view.textChanged.connect(self.on_hex_edit)
         layout.addWidget(self.hex_view)
         
         # Operations group
@@ -782,11 +811,23 @@ class MainWindow(QMainWindow):
         # Encoding operations
         encoding_layout = QHBoxLayout()
         self.encoding_combo = QComboBox()
-        self.encoding_combo.addItems(['hex', 'utf-8', 'ascii', 'base64'])
+        self.encoding_combo.addItems(['hex', 'ascii', 'utf-8', 'base64'])
         decode_btn = QPushButton("Decode As")
         encoding_layout.addWidget(self.encoding_combo)
         encoding_layout.addWidget(decode_btn)
         ops_layout.addLayout(encoding_layout)
+        
+        # Edit operations
+        edit_layout = QHBoxLayout()
+        self.edit_offset = QLineEdit()
+        self.edit_offset.setPlaceholderText("Offset (hex)")
+        self.edit_value = QLineEdit()
+        self.edit_value.setPlaceholderText("New value (hex)")
+        edit_btn = QPushButton("Edit Bytes")
+        edit_layout.addWidget(self.edit_offset)
+        edit_layout.addWidget(self.edit_value)
+        edit_layout.addWidget(edit_btn)
+        ops_layout.addLayout(edit_layout)
         
         ops_group.setLayout(ops_layout)
         layout.addWidget(ops_group)
@@ -803,6 +844,7 @@ class MainWindow(QMainWindow):
         save_btn.clicked.connect(self.save_hex_file)
         search_btn.clicked.connect(self.find_hex_pattern)
         decode_btn.clicked.connect(self.decode_hex_data)
+        edit_btn.clicked.connect(self.edit_hex_bytes)
         
         return widget
         
@@ -1533,11 +1575,106 @@ class MainWindow(QMainWindow):
                 with open(file_path, 'rb') as f:
                     data = f.read()
                 self.hex_editor = HexEditor(data)
-                self.hex_view.setPlainText(self.hex_editor.to_hex())
-                self.hex_results.clear()
+                self.hex_editor.current_file = file_path  # Store file path
+                self.update_hex_view()
+                self.update_magic_suggestions()
+                
+                # Show auto-fix button if file has extension
+                if os.path.splitext(file_path)[1]:
+                    self.auto_fix_btn.setVisible(True)
+                else:
+                    self.auto_fix_btn.setVisible(False)
+                    
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load file: {str(e)}")
     
+    def update_hex_view(self):
+        """Update the hex view with current data"""
+        if hasattr(self, 'hex_editor'):
+            self.hex_view.setPlainText(self.hex_editor.to_hex())
+    
+    def update_magic_suggestions(self):
+        """Update magic number suggestions"""
+        if not hasattr(self, 'hex_editor'):
+            return
+            
+        # Clear previous items
+        self.header_combo.clear()
+        
+        # Get detected formats and suggestions
+        detected = self.hex_editor.detected_formats
+        suggestions = self.hex_editor.get_suggested_headers()
+        
+        if detected:
+            formats_str = []
+            for fmt in detected:
+                formats_str.append(f"{fmt['format']}: {fmt['description']}")
+                # Add header to suggestions if it doesn't match current
+                if fmt['header'] != binascii.hexlify(self.hex_editor.data[:len(fmt['header'])//2]).decode().upper():
+                    self.header_combo.addItem(f"{fmt['format']} - Original Header", fmt['header'])
+            
+            self.format_label.setText("Detected formats:\n" + "\n".join(formats_str))
+            self.header_combo.setVisible(True)
+            self.apply_header_btn.setVisible(True)
+        else:
+            self.format_label.setText("No known format detected")
+            
+        # Add other suggested headers
+        for fmt, desc, header in suggestions:
+            if not any(header == item.data() for item in [self.header_combo.itemData(i) for i in range(self.header_combo.count())]):
+                self.header_combo.addItem(f"{fmt} - Suggested Header", header)
+
+    def apply_magic_header(self):
+        """Apply selected magic number header"""
+        if not hasattr(self, 'hex_editor'):
+            return
+            
+        current_data = self.header_combo.currentData()
+        if current_data:
+            if self.hex_editor.replace_header(current_data):
+                self.update_hex_view()
+                self.update_magic_suggestions()
+                self.hex_results.setPlainText("Header replaced successfully")
+            else:
+                self.hex_results.setPlainText("Failed to replace header")
+
+    def on_hex_edit(self):
+        """Handle hex view edits"""
+        if not hasattr(self, 'hex_editor'):
+            return
+            
+        # Get cursor position
+        cursor = self.hex_view.textCursor()
+        line = cursor.blockNumber() + 1
+        column = cursor.columnNumber()
+        
+        # Convert position to byte offset
+        offset = self.hex_editor.get_offset_from_position(line, column)
+        if offset is not None:
+            self.edit_offset.setText(f"{offset:x}")
+
+    def edit_hex_bytes(self):
+        """Edit bytes at specified offset"""
+        if not hasattr(self, 'hex_editor'):
+            return
+            
+        try:
+            # Parse offset
+            offset = int(self.edit_offset.text(), 16)
+            
+            # Parse new value
+            hex_value = self.edit_value.text().replace(' ', '')
+            new_bytes = binascii.unhexlify(hex_value)
+            
+            if self.hex_editor.edit_bytes(offset, new_bytes):
+                self.update_hex_view()
+                self.update_magic_suggestions()
+                self.hex_results.setPlainText("Bytes edited successfully")
+            else:
+                self.hex_results.setPlainText("Failed to edit bytes")
+        except Exception as e:
+            self.hex_results.setPlainText(f"Error: {str(e)}")
+
     def save_hex_file(self):
         if not hasattr(self, 'hex_editor'):
             QMessageBox.warning(self, "Warning", "No data to save")
@@ -1551,7 +1688,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Success", "File saved successfully")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
-    
+
     def find_hex_pattern(self):
         if not hasattr(self, 'hex_editor'):
             QMessageBox.warning(self, "Warning", "No data loaded")
@@ -1565,12 +1702,12 @@ class MainWindow(QMainWindow):
         try:
             positions = self.hex_editor.find_pattern(pattern)
             if positions:
-                self.hex_results.setPlainText(f"Pattern found at positions: {', '.join(map(str, positions))}")
+                self.hex_results.setPlainText(f"Pattern found at offsets: {', '.join(f'0x{pos:x}' for pos in positions)}")
             else:
                 self.hex_results.setPlainText("Pattern not found")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Search failed: {str(e)}")
-    
+
     def decode_hex_data(self):
         if not hasattr(self, 'hex_editor'):
             QMessageBox.warning(self, "Warning", "No data loaded")
@@ -1715,6 +1852,65 @@ class MainWindow(QMainWindow):
         elif results['sensible_text']:
             best_shift = results['sensible_text'][0][0]  # Use the shift from the highest confidence text
             self.shift_slider.setValue(best_shift)
+
+    def auto_fix_header(self):
+        """Automatically fix file header based on extension"""
+        if not hasattr(self, 'hex_editor') or not hasattr(self.hex_editor, 'current_file'):
+            return
+            
+        file_ext = os.path.splitext(self.hex_editor.current_file)[1].lower()
+        
+        # Map extensions to format names
+        ext_to_format = {
+            '.png': 'PNG',
+            '.jpg': 'JPEG',
+            '.jpeg': 'JPEG',
+            '.gif': 'GIF89a',  # Prefer newer GIF format
+            '.pdf': 'PDF',
+            '.zip': 'ZIP',
+            '.rar': 'RAR',
+            '.7z': '7Z',
+            '.gz': 'GZIP',
+            '.bz2': 'BZIP2',
+            '.class': 'CLASS',
+            '.doc': 'DOC',
+            '.mp3': 'MP3',
+            '.mp4': 'MP4',
+            '.wav': 'WAV'
+        }
+        
+        format_name = ext_to_format.get(file_ext)
+        if not format_name:
+            QMessageBox.warning(self, "Warning", "Could not determine format from file extension")
+            return
+            
+        # Get magic number for this format
+        format_info = MagicNumbers.get_format_info(format_name)
+        if not format_info:
+            QMessageBox.warning(self, "Warning", f"No magic number information for {format_name} format")
+            return
+            
+        # Check if current header matches expected
+        current_header = binascii.hexlify(self.hex_editor.data[:len(format_info['header'])//2]).decode().upper()
+        if current_header == format_info['header']:
+            QMessageBox.information(self, "Info", "File header is already correct")
+            return
+            
+        # Ask for confirmation
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setText(f"Fix file header for {format_name} format?")
+        msg.setInformativeText(f"Current header: {current_header}\nExpected header: {format_info['header']}")
+        msg.setWindowTitle("Confirm Header Fix")
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if msg.exec() == QMessageBox.StandardButton.Yes:
+            if self.hex_editor.replace_header(format_info['header']):
+                self.update_hex_view()
+                self.update_magic_suggestions()
+                self.hex_results.setPlainText(f"Successfully fixed header for {format_name} format")
+            else:
+                self.hex_results.setPlainText("Failed to fix header")
 
 def main():
     app = QApplication(sys.argv)
