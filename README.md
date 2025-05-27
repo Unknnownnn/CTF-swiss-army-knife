@@ -59,12 +59,32 @@ Direct Installation:
 2. Extract the archive
 3. Run the CTFSwissArmyKnife.exe
 
-## Usage
+Python CLI:
+> [!TIP]
+> Install in a virtual environment for easy access.
+> To make a virtual environment, use
+> ```
+> python -m venv venv
+> ```
+> and activate using
+>```
+> venv\Scripts\activate
+>```
 
-1. Launch the application
-2. Select the appropriate tab for your task (Crypto, Stego, etc.)
-3. Follow the intuitive GUI interface to perform your desired operations
-4. Results will be displayed in the designated output areas
+1. Ensure python and pip are installed on your device.
+2. Run
+   ```
+   pip install git+https://github.com/Unknnownnn/CTF-swiss-army-knife.git
+   ```
+3. After installing, run
+   ```
+   ctf-sak
+   ```
+4. To uninstall the application, run
+   ```
+   pip uninstall ctf-swiss-army-knife
+   ```
+
 
 ## Dependencies
 
