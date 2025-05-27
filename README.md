@@ -1,12 +1,16 @@
 # CTF Swiss Army Knife
 
 An all-in-one CTF (Capture The Flag) solving tool that combines various utilities commonly needed in CTF challenges. This tool provides a modern, user-friendly GUI interface for various CTF-related tasks.
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
 
 ## Features
 
 ### Cryptography
 - Classical Ciphers
+<<<<<<< Updated upstream
   - Caesar cipher
   - Vigenère cipher
   - ROT13
@@ -39,6 +43,29 @@ An all-in-one CTF (Capture The Flag) solving tool that combines various utilitie
 
 <br/>
 
+=======
+  - Caesar cipher (with shift slider and "Try All Shifts" feature)
+  - Vigenère cipher
+  - ROT13
+  - Atbash cipher
+- Modern Cryptography
+  - AES encryption/decryption (ECB and CBC modes)
+  - DES encryption/decryption
+  - Triple DES support
+  - XOR operations
+- Encoding/Decoding
+  - Base16/32/58/64/85/91 conversions
+  - Hex encoding/decoding
+  - Binary encoding/decoding
+  - Decimal encoding/decoding
+  - ASCII Manipulation Format (AMF)
+- Smart Detection
+  - Automatic format detection
+  - Deep analysis for encoded content
+  - Flag pattern recognition
+  - Multiple encoding layer detection
+
+>>>>>>> Stashed changes
 ### Steganography
 - Image Steganography
   - LSB (Least Significant Bit) analysis
