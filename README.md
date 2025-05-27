@@ -2,7 +2,7 @@
 
 # CTF Swiss Army Knife
 
-An all-in-one CTF (Capture The Flag) solving tool that combines various utilities commonly needed in CTF challenges. This tool provides a modern, user-friendly GUI interface for various CTF-related tasks.
+An all-in-one Capture The Flag Challenges solving tool written in <b>Python</b> that combines various utilities commonly needed in CTF challenges. This tool provides a modern, user-friendly GUI interface for various CTF-related tasks on a windows environment.
 
 <br/>
 
@@ -28,6 +28,7 @@ Supports Image Audio techniques such as Spectrogram analysis and generation usin
 
 ### <img src="./misc/for.png"  width=40 height=40> Forensics
 Supports File Analysis features such as Metadata extraction, File format detection, Magic number analysis, Compression/Zip detection.
+
 Supports External Tools if you have them installed on your device. Tools such as Steghide, Binwalk, Stegsolve, Zsteg, ExifTool, are required to be installed externally to the SYSTEM PATH for the program to detect and use them.
 
 ### <img src="./misc/convert.png"  width=40 height=40> Format Conversion
@@ -43,17 +44,17 @@ Also has support to automatically suggest fix for common headers using hex dump 
 ### <img src="./misc/auto.png"  width=40 height=40> Auto Tab
 Includes a one click solution auto tab to automatically find a general or user specified text/string format within the input text/file automatically using various techniques at once and return the string if found. The auto tab may not be able to find flags/strings requiring multiple steps or advanced tools.
 
-### Additional Features
-- Modern Material Design UI
-- Real-time Analysis
-- Automatic Flag Detection
-- Custom Flag Pattern Support
-- File Drag and Drop Support
-- Comprehensive Error Handling
-- Cross-platform Compatibility
+### Screenshots
+<img src="./misc/autotab.png"  width=600 height=300> 
+<img src="./misc/audiotab.png"  width=600 height=300> 
+<img src="./misc/converttab.png"  width=600 height=300> 
+<img src="./misc/cryptotab.png"  width=600 height=300> 
+<img src="./misc/hextab.png"  width=600 height=300> 
+
 
 ## Installation
 
+Direct Installation:
 1. Download the latest release from the releases page
 2. Extract the archive
 3. Run the CTFSwissArmyKnife.exe
