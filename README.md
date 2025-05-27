@@ -51,6 +51,8 @@ Includes a one click solution auto tab to automatically find a general or user s
 <img src="./misc/cryptotab.png"  width=600 height=300> 
 <img src="./misc/hextab.png"  width=600 height=300> 
 
+## Requirements
+Requires python, pip and git for python cli installation
 
 ## Installation
 
