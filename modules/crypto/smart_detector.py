@@ -47,11 +47,16 @@ class SmartDetector:
         total_letters = sum(letter_counts.values())
         if total_letters:
             freq_score = 0
+            scored_chars = 0
             for char, count in letter_counts.items():
                 expected_freq = self.eng_freq.get(char, 0) / 100
-                actual_freq = count / total_letters
-                freq_score += 1 - min(abs(expected_freq - actual_freq) / expected_freq, 1)
-            scores.append((freq_score / len(letter_counts)) * 0.3)  # 30% weight
+                if expected_freq > 0:  # Only score characters with expected frequencies
+                    actual_freq = count / total_letters
+                    freq_score += 1 - min(abs(expected_freq - actual_freq) / expected_freq, 1)
+                    scored_chars += 1
+            # Average the frequency score only for characters we actually scored
+            if scored_chars > 0:
+                scores.append((freq_score / scored_chars) * 0.3)  # 30% weight
             
         # 3. N-gram scoring
         if len(text) >= 3:

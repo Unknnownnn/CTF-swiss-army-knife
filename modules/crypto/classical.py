@@ -105,16 +105,20 @@ def rot13(text: str) -> str:
 
 def atbash(text: str) -> str:
     """
-    Atbash cipher implementation
+    Atbash cipher implementation - maps 'A' to 'Z', 'B' to 'Y', etc.
+    Handles ASCII letters only, preserving case and non-alphabetic characters.
     """
     result = ""
     for char in text:
-        if char.isalpha():
+        if char.isascii() and char.isalpha():
             if char.isupper():
+                # For uppercase: map A(65) to Z(90), B(66) to Y(89), etc.
                 result += chr(ord('Z') - (ord(char) - ord('A')))
             else:
+                # For lowercase: map a(97) to z(122), b(98) to y(121), etc.
                 result += chr(ord('z') - (ord(char) - ord('a')))
         else:
+            # Preserve non-ASCII and non-alphabetic characters
             result += char
     return result
 

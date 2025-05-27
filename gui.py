@@ -5,8 +5,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget,
                            QLineEdit, QTextEdit, QFileDialog, QComboBox,
                            QSpinBox, QMessageBox, QGroupBox, QRadioButton,
                            QScrollArea, QCheckBox, QSlider, QStackedWidget,
-                           QSizePolicy)
-from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QSize
+                           QSizePolicy, QProgressDialog, QProgressBar)
+from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QSize, QTimer
 from PyQt6.QtGui import QPixmap, QIcon
 from qt_material import apply_stylesheet
 import matplotlib.pyplot as plt
@@ -20,6 +20,23 @@ from typing import Optional
 import re
 import string
 from itertools import product
+import logging
+import traceback
+import mmap
+from typing import Iterator, List, Tuple
+import time
+from bs4 import BeautifulSoup
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Output to terminal
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 from modules.crypto.classical import caesar_cipher, vigenere_cipher, rot13, atbash, try_all_caesar_shifts
 from modules.stego.image import analyze_image, extract_data, hide_data
@@ -34,6 +51,119 @@ from modules.forensics.external_tools import (run_steghide, run_binwalk, run_ste
                                           ExternalToolError)
 from modules.crypto.ai_agent import CryptoAIAgent
 from modules.crypto.basex import BaseX
+
+def extract_strings(file_path: str, min_length: int = 4) -> Iterator[Tuple[int, str]]:
+    """
+    Extract printable strings from a binary file, similar to Linux 'strings' command.
+    Returns iterator of (offset, string) tuples.
+    """
+    try:
+        with open(file_path, 'rb') as f:
+            # Memory map the file for efficient reading
+            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                current_string = []
+                current_offset = None
+                
+                for i in range(len(mm)):
+                    byte = mm[i:i+1][0]
+                    if 32 <= byte <= 126:  # Printable ASCII
+                        if not current_string:  # Start of new string
+                            current_offset = i
+                        current_string.append(chr(byte))
+                    elif current_string:  # End of string
+                        if len(current_string) >= min_length:
+                            yield current_offset, ''.join(current_string)
+                        current_string = []
+                        current_offset = None
+                
+                # Don't forget the last string if it exists
+                if current_string and len(current_string) >= min_length:
+                    yield current_offset, ''.join(current_string)
+    except Exception as e:
+        logger.error(f"Error in extract_strings: {str(e)}")
+        logger.error(traceback.format_exc())
+        return []
+
+def grep_strings(strings: List[Tuple[int, str]], pattern: str, case_sensitive: bool = False) -> List[Tuple[int, str]]:
+    """
+    Search for pattern in extracted strings, similar to grep.
+    Returns list of matching (offset, string) tuples.
+    """
+    try:
+        if not case_sensitive:
+            pattern = pattern.lower()
+            return [(offset, s) for offset, s in strings if pattern in s.lower()]
+        return [(offset, s) for offset, s in strings if pattern in s]
+    except Exception as e:
+        logger.error(f"Error in grep_strings: {str(e)}")
+        logger.error(traceback.format_exc())
+        return []
+
+class ProgressWindow(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Analysis Progress")
+        self.setFixedSize(400, 150)
+        
+        # Center the window
+        if parent:
+            geometry = parent.geometry()
+            x = geometry.x() + (geometry.width() - self.width()) // 2
+            y = geometry.y() + (geometry.height() - self.height()) // 2
+            self.move(x, y)
+        
+        layout = QVBoxLayout(self)
+        
+        # Status label
+        self.status_label = QLabel("Initializing...")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(True)
+        layout.addWidget(self.progress_bar)
+        
+        # Details label for additional info
+        self.details_label = QLabel("")
+        self.details_label.setWordWrap(True)
+        layout.addWidget(self.details_label)
+        
+        # Stop button
+        self.stop_button = QPushButton("Stop Analysis")
+        self.stop_button.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                padding: 5px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+            QPushButton:pressed {
+                background-color: #a93226;
+            }
+        """)
+        layout.addWidget(self.stop_button)
+        
+        # Make window stay on top
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
+
+    def update_progress(self, current: int, total: int, operation: str = None):
+        if total > 0:
+            percentage = int((current / total) * 100)
+            self.progress_bar.setValue(percentage)
+            if operation:
+                self.status_label.setText(operation)
+            self.details_label.setText(f"Progress: {current}/{total} ({percentage}%)")
+        QApplication.processEvents()
+
+    def set_status(self, status: str):
+        self.status_label.setText(status)
+        QApplication.processEvents()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -92,20 +222,22 @@ class MainWindow(QMainWindow):
         # Add pages to stack
         self.content_stack.addWidget(self.create_auto_tab())
         self.content_stack.addWidget(self.create_crypto_tab())
-        self.content_stack.addWidget(self.create_convert_tab())  # Add Convert tab
+        self.content_stack.addWidget(self.create_convert_tab())
         self.content_stack.addWidget(self.create_stego_tab())
         self.content_stack.addWidget(self.create_audio_stego_tab())
         self.content_stack.addWidget(self.create_hex_editor_tab())
         self.content_stack.addWidget(self.create_forensics_tab())
+        self.content_stack.addWidget(self.create_hash_tab())  # Add hash cracking tab
         
         # Create sidebar buttons with icons
         self.create_sidebar_button("AUTO", "", 0)
         self.create_sidebar_button("Cryptography", "", 1)
-        self.create_sidebar_button("Convert", "", 2)  # Add Convert button
+        self.create_sidebar_button("Convert", "", 2)
         self.create_sidebar_button("Image Stego", "", 3)
         self.create_sidebar_button("Audio Stego", "", 4)
         self.create_sidebar_button("Hex Editor", "", 5)
         self.create_sidebar_button("Forensics", "", 6)
+        self.create_sidebar_button("Hash Cracking", "", 7)  # Changed from "Hash Cracker" to match icon_mapping
         
         # Add stretch to push content to top
         self.sidebar_layout.addStretch()
@@ -132,7 +264,11 @@ class MainWindow(QMainWindow):
         
         # Initialize AI agent
         self.ai_agent = CryptoAIAgent()
-
+        
+        # Initialize progress window
+        self.progress_window = None
+        self.analysis_running = False
+        
     def create_sidebar_button(self, text, icon, index):
         """Create a sidebar button with icon and text"""
         btn = QPushButton(text)
@@ -147,7 +283,8 @@ class MainWindow(QMainWindow):
             "Image Stego": "imgsteg.ico",
             "Audio Stego": "audio.ico",
             "Hex Editor": "hex.ico",
-            "Forensics": "foren.ico"
+            "Forensics": "foren.ico",
+            "Hash Cracking": "hash.ico"
         }
         
         # Set icon from file
@@ -184,7 +321,7 @@ class MainWindow(QMainWindow):
             self.width_animation.setStartValue(current_width)
             self.width_animation.setEndValue(200)
             # Restore button texts
-            labels = ["AUTO", "Cryptography", "Convert", "Image Stego", "Audio Stego", "Hex Editor", "Forensics"]
+            labels = ["AUTO", "Cryptography", "Convert", "Image Stego", "Audio Stego", "Hex Editor", "Forensics", "Hash Cracking"]
             for i in range(1, self.sidebar_layout.count() - 1):
                 widget = self.sidebar_layout.itemAt(i).widget()
                 if isinstance(widget, QPushButton):
@@ -515,10 +652,13 @@ class MainWindow(QMainWindow):
         self.check_encodings.setChecked(True)
         self.check_patterns = QCheckBox("Search for Flag Patterns")
         self.check_patterns.setChecked(True)
+        self.check_hashes = QCheckBox("Detect Hash Types")
+        self.check_hashes.setChecked(True)
         
         options_layout.addWidget(self.check_crypto)
         options_layout.addWidget(self.check_encodings)
         options_layout.addWidget(self.check_patterns)
+        options_layout.addWidget(self.check_hashes)
         
         options_group.setLayout(options_layout)
         layout.addWidget(options_group)
@@ -565,8 +705,47 @@ class MainWindow(QMainWindow):
             return
             
         try:
+            logger.debug("Starting auto analysis")
+            self.show_progress("Auto Analysis")
+            self.progress_window.set_status("Starting analysis...")
+            
+            if self.check_analysis_stopped():
+                return
+                
             # Clear previous results
             self.auto_results.clear()
+            
+            # Process file if provided
+            if file_path and os.path.exists(file_path):
+                self.progress_window.set_status("Reading file...")
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    text = f.read()
+            
+            # Split text into words for analysis
+            words = text.split()
+            
+            # Check for hashes first if enabled
+            if self.check_hashes.isChecked():
+                self.progress_window.set_status("Detecting hash types...")
+                self.auto_results.append("=== Hash Detection Results ===\n")
+                
+                found_hashes = False
+                for word in words:
+                    # Skip short strings and obvious non-hashes
+                    if len(word) < 8 or '{' in word or '}' in word:
+                        continue
+                        
+                    # Use the new hash identification logic
+                    hash_types = self._identify_hash_string(word)
+                    if hash_types:
+                        found_hashes = True
+                        self.auto_results.append(f"Potential hash found: {word}")
+                        self.auto_results.append(f"Possible types: {', '.join(hash_types)}\n")
+                
+                if not found_hashes:
+                    self.auto_results.append("No potential hashes detected.\n")
+                
+                self.auto_results.append("\n")  # Add spacing before other results
             
             # Store all found flags for final display
             all_most_likely_flags = set()
@@ -574,146 +753,84 @@ class MainWindow(QMainWindow):
             
             # Get custom flag pattern if specified
             custom_pattern = self.get_current_flag_pattern()
-            if custom_pattern:
-                self.ai_agent.flag_patterns = custom_pattern
+            
+            # Continue with pattern matching if enabled
+            if self.check_patterns.isChecked():
+                self.progress_window.set_status("Searching for flag patterns...")
+                # ... rest of the existing pattern matching code ...
             
             # Initialize analyzers
             basex = BaseX()
             
             # Process text input if present
             if text:
+                logger.debug("Processing text input")
                 self.auto_results.append("=== Text Analysis ===\n")
                 
-                # Try format conversions first
-                self.auto_results.append("Trying format conversions...\n")
-                formats = ["Hex", "Decimal", "Binary", "Base64", "Base32", "Base16", "Base85"]
-                found_flag = False
-                
-                # Try single conversion first
-                for fmt in formats:
-                    try:
-                        # Convert to bytes
-                        data = self.format_to_bytes(text, fmt)
-                        if data:
-                            decoded = data.decode('ascii', errors='replace')
-                            if any(32 <= ord(c) <= 126 for c in decoded):  # Contains printable chars
-                                self.auto_results.append(f"➜ {fmt} → ASCII:")
-                                self.auto_results.append(f"  {decoded}\n")
-                                
-                                # Check for flag patterns
-                                if basex.looks_like_flag(decoded, custom_pattern):
-                                    self.auto_results.append("  ⚑ Flag format detected!")
-                                    all_most_likely_flags.add(decoded)
-                                    found_flag = True
-                    except:
-                        continue
-                
-                # If no flags found, try deep analysis with double conversion
-                if not found_flag:
-                    self.auto_results.append("\nTrying deep format analysis...\n")
-                    for fmt1 in formats:
-                        for fmt2 in formats:
-                            if fmt1 != fmt2:
-                                try:
-                                    # First conversion
-                                    data1 = self.format_to_bytes(text, fmt1)
-                                    if data1:
-                                        # Convert to intermediate format
-                                        inter = self.bytes_to_format(data1, fmt2)
-                                        if inter:
-                                            # Second conversion
-                                            data2 = self.format_to_bytes(inter, fmt2)
-                                            if data2:
-                                                decoded = data2.decode('ascii', errors='replace')
-                                                if any(32 <= ord(c) <= 126 for c in decoded):
-                                                    self.auto_results.append(f"➜ {fmt1} → {fmt2} → ASCII:")
-                                                    self.auto_results.append(f"  {decoded}\n")
-                                                    
-                                                    # Check for flag patterns
-                                                    if basex.looks_like_flag(decoded, custom_pattern):
-                                                        self.auto_results.append("  ⚑ Flag format detected!")
-                                                        all_most_likely_flags.add(decoded)
-                                except:
-                                    continue
-                
-                # Try Caesar cipher shifts
-                caesar_results = try_all_caesar_shifts(text, custom_pattern)
-                if caesar_results['likely_flags']:
-                    self.auto_results.append("\nCaesar Cipher Analysis:")
-                    for shift, decoded, confidence in caesar_results['likely_flags']:
-                        self.auto_results.append(f"➜ Shift {shift} ({confidence*100:.1f}% confidence):")
-                        self.auto_results.append(f"  {decoded}\n")
-                        all_most_likely_flags.add(decoded)
-                
-                # Try BaseX decoding
-                base_results = basex.try_all_decoding(text, custom_pattern)
-                
-                # Add any flags found from base decoding
-                if base_results['likely_flags']:
-                    self.auto_results.append("Base Encoding Analysis:")
-                    for method, decoded, confidence in base_results['likely_flags']:
-                        self.auto_results.append(f"➜ {method} ({confidence*100:.1f}% confidence):")
-                        self.auto_results.append(f"  {decoded}\n")
-                        all_most_likely_flags.add(decoded)
-                
-                # Add other promising decoded results
-                if base_results['printable_results']:
-                    self.auto_results.append("Other Base Decoded Results:")
-                    for method, decoded, confidence in base_results['printable_results']:
-                        if confidence > 0.8:  # Only show high confidence results
-                            self.auto_results.append(f"➜ {method} ({confidence*100:.1f}% confidence):")
-                            self.auto_results.append(f"  {decoded}\n")
-                            all_decoded_results.append(decoded)
-                
-                # Run AI agent analysis
-                results = self.ai_agent.analyze_text_for_flags(text)
-                
-                # Store most likely flags
-                all_most_likely_flags.update(results.get('most_likely_flags', []))
-                
-                # Remove most likely flags section from formatted results
-                results['most_likely_flags'] = []  # Clear to prevent showing here
-                formatted_results = self.ai_agent.format_flag_analysis(results)
-                
-                # Add original analysis results if available
-                if results['analysis_results'] and results['analysis_results']['status'] == 'success':
-                    self.auto_results.append("\n=== Detailed Analysis ===\n")
-                    for attempt in results['analysis_results']['decryption_attempts']:
-                        self.auto_results.append(f"\nTried {attempt['method']}:")
-                        self.auto_results.append(f"Confidence: {attempt['confidence']*100:.0f}%")
-                        self.auto_results.append(f"Result: {attempt['result']}\n")
-                        
-                        # Check if result contains flag pattern
-                        if basex.looks_like_flag(attempt['result'], custom_pattern):
-                            all_most_likely_flags.add(attempt['result'])
-                
-                # Add formatted results (without most likely flags)
-                self.auto_results.append(formatted_results)
-            
-            # Process file input if present
-            if file_path:
-                self.auto_results.append("\n=== File Analysis ===\n")
-                
-                # Determine file type
-                mime_type, _ = mimetypes.guess_type(file_path)
-                is_text = mime_type and ('text' in mime_type or mime_type in ['application/json', 'application/xml'])
-                
-                if is_text:
-                    # Handle text file
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        file_text = f.read()
+                try:
+                    # Try format conversions first
+                    self.auto_results.append("Trying format conversions...\n")
+                    formats = ["Hex", "Decimal", "Binary", "Base64", "Base32", "Base16", "Base85"]
+                    found_flag = False
+                    
+                    # Try single conversion first
+                    for fmt in formats:
+                        try:
+                            # Convert to bytes
+                            data = self.format_to_bytes(text, fmt)
+                            if data:
+                                decoded = data.decode('ascii', errors='replace')
+                                if any(32 <= ord(c) <= 126 for c in decoded):  # Contains printable chars
+                                    self.auto_results.append(f"➜ {fmt} → ASCII:")
+                                    self.auto_results.append(f"  {decoded}\n")
+                                    
+                                    # Check for flag patterns
+                                    if basex.looks_like_flag(decoded, custom_pattern):
+                                        self.auto_results.append("  ⚑ Flag format detected!")
+                                        all_most_likely_flags.add(decoded)
+                                        found_flag = True
+                        except:
+                            continue
+                    
+                    # If no flags found, try deep analysis with double conversion
+                    if not found_flag:
+                        self.auto_results.append("\nTrying deep format analysis...\n")
+                        for fmt1 in formats:
+                            for fmt2 in formats:
+                                if fmt1 != fmt2:
+                                    try:
+                                        # First conversion
+                                        data1 = self.format_to_bytes(text, fmt1)
+                                        if data1:
+                                            # Convert to intermediate format
+                                            inter = self.bytes_to_format(data1, fmt2)
+                                            if inter:
+                                                # Second conversion
+                                                data2 = self.format_to_bytes(inter, fmt2)
+                                                if data2:
+                                                    decoded = data2.decode('ascii', errors='replace')
+                                                    if any(32 <= ord(c) <= 126 for c in decoded):
+                                                        self.auto_results.append(f"➜ {fmt1} → {fmt2} → ASCII:")
+                                                        self.auto_results.append(f"  {decoded}\n")
+                                                        
+                                                        # Check for flag patterns
+                                                        if basex.looks_like_flag(decoded, custom_pattern):
+                                                            self.auto_results.append("  ⚑ Flag format detected!")
+                                                            all_most_likely_flags.add(decoded)
+                                    except:
+                                        continue
                     
                     # Try Caesar cipher shifts
-                    caesar_results = try_all_caesar_shifts(file_text, custom_pattern)
+                    caesar_results = try_all_caesar_shifts(text, custom_pattern)
                     if caesar_results['likely_flags']:
-                        self.auto_results.append("Caesar Cipher Analysis:")
+                        self.auto_results.append("\nCaesar Cipher Analysis:")
                         for shift, decoded, confidence in caesar_results['likely_flags']:
                             self.auto_results.append(f"➜ Shift {shift} ({confidence*100:.1f}% confidence):")
                             self.auto_results.append(f"  {decoded}\n")
                             all_most_likely_flags.add(decoded)
                     
                     # Try BaseX decoding
-                    base_results = basex.try_all_decoding(file_text, custom_pattern)
+                    base_results = basex.try_all_decoding(text, custom_pattern)
                     
                     # Add any flags found from base decoding
                     if base_results['likely_flags']:
@@ -723,118 +840,270 @@ class MainWindow(QMainWindow):
                             self.auto_results.append(f"  {decoded}\n")
                             all_most_likely_flags.add(decoded)
                     
+                    # Add other promising decoded results
+                    if base_results['printable_results']:
+                        self.auto_results.append("Other Base Decoded Results:")
+                        for method, decoded, confidence in base_results['printable_results']:
+                            if confidence > 0.8:  # Only show high confidence results
+                                self.auto_results.append(f"➜ {method} ({confidence*100:.1f}% confidence):")
+                                self.auto_results.append(f"  {decoded}\n")
+                                all_decoded_results.append(decoded)
+                    
                     # Run AI agent analysis
-                    results = self.ai_agent.analyze_text_for_flags(file_text)
+                    results = self.ai_agent.analyze_text_for_flags(text)
+                    
+                    # Store most likely flags
                     all_most_likely_flags.update(results.get('most_likely_flags', []))
-                    results['most_likely_flags'] = []  # Clear to prevent showing here
+                    
+                    # Keep a copy of most likely flags for formatting
+                    results['most_likely_flags'] = list(all_most_likely_flags)  # Changed: Don't clear, but use the complete set
                     formatted_results = self.ai_agent.format_flag_analysis(results)
-                    self.auto_results.append(formatted_results)
-                else:
-                    # Handle binary file
-                    # First try to find any text/string patterns in the binary
-                    with open(file_path, 'rb') as f:
-                        binary_data = f.read()
                     
-                    # Extract strings from binary
-                    strings = []
-                    current_string = ""
-                    for byte in binary_data:
-                        if 32 <= byte <= 126:  # Printable ASCII
-                            current_string += chr(byte)
-                        elif current_string:
-                            if len(current_string) >= 4:  # Only keep strings of 4+ chars
-                                strings.append(current_string)
-                            current_string = ""
-                    if current_string and len(current_string) >= 4:
-                        strings.append(current_string)
-                    
-                    # Analyze extracted strings
-                    if strings:
-                        self.auto_results.append("Analyzing strings found in binary file...\n")
-                        for string in strings:
-                            # Try Caesar cipher shifts
-                            caesar_results = try_all_caesar_shifts(string, custom_pattern)
-                            if caesar_results['likely_flags']:
-                                for shift, decoded, confidence in caesar_results['likely_flags']:
-                                    all_most_likely_flags.add(decoded)
+                    # Add original analysis results if available
+                    if results['analysis_results'] and results['analysis_results']['status'] == 'success':
+                        self.auto_results.append("\n=== Detailed Analysis ===\n")
+                        for attempt in results['analysis_results']['decryption_attempts']:
+                            self.auto_results.append(f"\nTried {attempt['method']}:")
+                            self.auto_results.append(f"Confidence: {attempt['confidence']*100:.0f}%")
+                            self.auto_results.append(f"Result: {attempt['result']}\n")
                             
-                            # Try BaseX decoding
-                            base_results = basex.try_all_decoding(string, custom_pattern)
-                            if base_results['likely_flags']:
-                                for method, decoded, confidence in base_results['likely_flags']:
-                                    all_most_likely_flags.add(decoded)
+                            # Check if result contains flag pattern
+                            if basex.looks_like_flag(attempt['result'], custom_pattern):
+                                all_most_likely_flags.add(attempt['result'])
+                    
+                    # Add formatted results
+                    self.auto_results.append(formatted_results)
+                    
+                    # Add final summary of all found flags
+                    if all_most_likely_flags:
+                        self.auto_results.append("\n=== Found Flags Summary ===\n")
+                        for flag in sorted(all_most_likely_flags):
+                            self.auto_results.append(f"⚑ {flag}\n")
+                    
+                    logger.debug("Text analysis completed")
+                except Exception as e:
+                    logger.error(f"Error during text analysis: {str(e)}")
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    raise
+                
+            # Process file input if present
+            if file_path:
+                logger.debug(f"Processing file: {file_path}")
+                self.auto_results.append("\n=== File Analysis ===\n")
+                
+                try:
+                    # Determine file type
+                    mime_type, _ = mimetypes.guess_type(file_path)
+                    logger.debug(f"Detected MIME type: {mime_type}")
+                    is_text = mime_type and ('text' in mime_type or mime_type in ['application/json', 'application/xml'])
+                    
+                    if is_text:
+                        logger.debug("Processing as text file")
+                        # Handle text file
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            file_text = f.read()
                         
-                        combined_text = "\n".join(strings)
-                        results = self.ai_agent.analyze_text_for_flags(combined_text)
+                        # Try Caesar cipher shifts
+                        caesar_results = try_all_caesar_shifts(file_text, custom_pattern)
+                        if caesar_results['likely_flags']:
+                            self.auto_results.append("Caesar Cipher Analysis:")
+                            for shift, decoded, confidence in caesar_results['likely_flags']:
+                                self.auto_results.append(f"➜ Shift {shift} ({confidence*100:.1f}% confidence):")
+                                self.auto_results.append(f"  {decoded}\n")
+                                all_most_likely_flags.add(decoded)
+                        
+                        # Try BaseX decoding
+                        base_results = basex.try_all_decoding(file_text, custom_pattern)
+                        
+                        # Add any flags found from base decoding
+                        if base_results['likely_flags']:
+                            self.auto_results.append("Base Encoding Analysis:")
+                            for method, decoded, confidence in base_results['likely_flags']:
+                                self.auto_results.append(f"➜ {method} ({confidence*100:.1f}% confidence):")
+                                self.auto_results.append(f"  {decoded}\n")
+                                all_most_likely_flags.add(decoded)
+                        
+                        # Run AI agent analysis
+                        results = self.ai_agent.analyze_text_for_flags(file_text)
                         all_most_likely_flags.update(results.get('most_likely_flags', []))
                         results['most_likely_flags'] = []  # Clear to prevent showing here
                         formatted_results = self.ai_agent.format_flag_analysis(results)
                         self.auto_results.append(formatted_results)
-                    
-                    # Run forensics analysis
-                    try:
-                        from modules.forensics.analyzer import analyze_file
-                        forensics_results, formatted_forensics = analyze_file(file_path, use_external_tools=True)
+                    else:
+                        logger.debug("Processing as binary file")
+                        self.progress_window.set_status("Processing binary file...")
                         
-                        if forensics_results:
-                            self.auto_results.append("\n=== Forensics Analysis ===\n")
-                            self.auto_results.append(formatted_forensics)
-                    except Exception as e:
-                        self.auto_results.append(f"\nForensics analysis failed: {str(e)}")
-                    
-                    # If it's an image, try stego analysis
-                    if mime_type and 'image' in mime_type:
-                        try:
-                            from modules.stego.image import analyze_image
-                            stego_results = analyze_image(file_path)
-                            if stego_results:
-                                self.auto_results.append("\n=== Image Steganography Analysis ===\n")
-                                self.auto_results.append(str(stego_results))
-                        except Exception as e:
-                            self.auto_results.append(f"\nImage stego analysis failed: {str(e)}")
-                    
-                    # If it's an audio file, try audio analysis
-                    elif mime_type and 'audio' in mime_type:
-                        try:
-                            from modules.stego.audio import analyze_audio, analyze_spectrogram
-                            audio_results = analyze_audio(file_path)
-                            if audio_results:
-                                self.auto_results.append("\n=== Audio Analysis ===\n")
-                                self.auto_results.append(str(audio_results))
+                        if self.check_analysis_stopped():
+                            return
+                        
+                        # Extract strings efficiently
+                        logger.debug("Extracting strings from binary file...")
+                        self.progress_window.set_status("Extracting strings from binary file...")
+                        extracted_strings = list(extract_strings(file_path))
+                        
+                        if self.check_analysis_stopped():
+                            return
+                        
+                        logger.debug(f"Extracted {len(extracted_strings)} strings")
+                        
+                        if extracted_strings:
+                            self.auto_results.append(f"Found {len(extracted_strings)} printable strings\n")
                             
-                            # Also analyze spectrogram
-                            spec_results = analyze_spectrogram(file_path)
-                            if spec_results:
-                                self.auto_results.append("\n=== Spectrogram Analysis ===\n")
-                                self.auto_results.append(str(spec_results))
+                            # First look for potential flags using grep-like search
+                            logger.debug("Searching for potential flag patterns...")
+                            self.progress_window.set_status("Searching for flag patterns...")
+                            flag_patterns = [
+                                r'flag{', r'ctf{', r'key{', r'FLAG{', r'CTF{', r'KEY{',
+                                r'[A-Za-z0-9_]{2,8}{[^}]+}'
+                            ]
+                            
+                            if custom_pattern:
+                                flag_patterns.extend(custom_pattern)
+                            
+                            potential_flags = set()
+                            for i, pattern in enumerate(flag_patterns):
+                                if self.check_analysis_stopped():
+                                    return
+                                
+                                self.progress_window.update_progress(i + 1, len(flag_patterns), 
+                                                                  f"Checking pattern: {pattern}")
+                                matches = grep_strings(extracted_strings, pattern)
+                                for offset, match in matches:
+                                    self.auto_results.append(f"Potential flag at offset 0x{offset:x}: {match}\n")
+                                    potential_flags.add(match)
+                                    all_most_likely_flags.add(match)
+                            
+                            # Analyze strings in chunks to prevent UI freezing
+                            logger.debug("Starting detailed analysis of strings...")
+                            self.progress_window.set_status("Analyzing strings...")
+                            chunk_size = 100
+                            total_chunks = (len(extracted_strings) + chunk_size - 1) // chunk_size
+                            
+                            for chunk_index in range(total_chunks):
+                                if self.check_analysis_stopped():
+                                    return
+                                
+                                self.progress_window.update_progress(chunk_index + 1, total_chunks,
+                                                                  "Analyzing extracted strings")
+                                
+                                if chunk_index % 10 == 0:  # Update progress every 10 chunks
+                                    logger.debug(f"Analyzing chunk {chunk_index + 1}/{total_chunks}")
+                                
+                                start_idx = chunk_index * chunk_size
+                                end_idx = min((chunk_index + 1) * chunk_size, len(extracted_strings))
+                                chunk = [s for _, s in extracted_strings[start_idx:end_idx]]
+                                
+                                # Try Caesar cipher on each string
+                                for string in chunk:
+                                    if self.check_analysis_stopped():
+                                        return
+                                    if len(string) > 4:  # Only analyze longer strings
+                                        caesar_results = try_all_caesar_shifts(string, custom_pattern)
+                                        if caesar_results['likely_flags']:
+                                            for shift, decoded, confidence in caesar_results['likely_flags']:
+                                                all_most_likely_flags.add(decoded)
+                                        
+                                        # Try BaseX decoding
+                                        base_results = basex.try_all_decoding(string, custom_pattern)
+                                        if base_results['likely_flags']:
+                                            for method, decoded, confidence in base_results['likely_flags']:
+                                                all_most_likely_flags.add(decoded)
+                            
+                            # Run AI analysis on filtered subset of strings
+                            logger.debug("Running AI analysis on promising strings...")
+                            self.progress_window.set_status("Running AI analysis...")
+                            
+                            # Only analyze strings that might be interesting
+                            interesting_strings = [s for _, s in extracted_strings if 
+                                                any(c in s for c in '{}_-') or 
+                                                any(p.lower() in s.lower() for p in ['flag', 'ctf', 'key'])]
+                            
+                            if interesting_strings:
+                                combined_text = "\n".join(interesting_strings[:1000])  # Limit to prevent overload
+                                results = self.ai_agent.analyze_text_for_flags(combined_text)
+                                all_most_likely_flags.update(results.get('most_likely_flags', []))
+                                
+                                # Keep a copy of most likely flags for formatting
+                                results['most_likely_flags'] = list(all_most_likely_flags)  # Changed: Don't clear, but use the complete set
+                                formatted_results = self.ai_agent.format_flag_analysis(results)
+                                self.auto_results.append(formatted_results)
+                            
+                            # Add final summary of all found flags
+                            if all_most_likely_flags:
+                                self.auto_results.append("\n=== Found Flags Summary ===\n")
+                                for flag in sorted(all_most_likely_flags):
+                                    self.auto_results.append(f"⚑ {flag}\n")
+                            
+                            logger.debug("String analysis complete")
+                        
+                        # Run forensics analysis
+                        logger.debug("Starting forensics analysis...")
+                        try:
+                            from modules.forensics.analyzer import analyze_file
+                            forensics_results, formatted_forensics = analyze_file(file_path, use_external_tools=True)
+                            
+                            if forensics_results:
+                                logger.debug("Forensics analysis returned results")
+                                self.auto_results.append("\n=== Forensics Analysis ===\n")
+                                self.auto_results.append(formatted_forensics)
                         except Exception as e:
-                            self.auto_results.append(f"\nAudio analysis failed: {str(e)}")
-            
-            # Display all collected flags at the very end
-            if all_most_likely_flags:
-                self.auto_results.append("\n" + "="*80)  # Longer separator
-                self.auto_results.append("\n=== POTENTIAL FLAGS FOUND ===")
-                self.auto_results.append("="*80 + "\n")  # Longer separator
-                for flag in sorted(all_most_likely_flags):  # Sort flags for consistency
-                    self.auto_results.append(f"➜ {flag}")
-                self.auto_results.append("\n" + "="*80)  # Longer separator
-            
-            # Restore default patterns after analysis
-            if custom_pattern:
-                self.ai_agent.flag_patterns = [
-                    r'[A-Za-z0-9_]{2,8}{[^}]+}',  # Generic flag format XXX{...}
-                    r'flag{[^}]+}',                # Explicit flag{...}
-                    r'ctf{[^}]+}',                 # CTF{...}
-                    r'key{[^}]+}'                  # key{...}
-                ]
-            
-            # Scroll to the bottom to show the flags
-            self.auto_results.verticalScrollBar().setValue(
-                self.auto_results.verticalScrollBar().maximum()
-            )
+                            logger.error(f"Forensics analysis failed: {str(e)}")
+                            logger.error(traceback.format_exc())
+                            self.auto_results.append(f"\nForensics analysis failed: {str(e)}")
+                        
+                        # If it's an image, try stego analysis
+                        if mime_type and 'image' in mime_type:
+                            logger.debug("Starting image stego analysis...")
+                            try:
+                                from modules.stego.image import analyze_image
+                                stego_results = analyze_image(file_path)
+                                if stego_results:
+                                    logger.debug("Image stego analysis returned results")
+                                    self.auto_results.append("\n=== Image Steganography Analysis ===\n")
+                                    self.auto_results.append(str(stego_results))
+                            except Exception as e:
+                                logger.error(f"Image stego analysis failed: {str(e)}")
+                                logger.error(traceback.format_exc())
+                                self.auto_results.append(f"\nImage stego analysis failed: {str(e)}")
+                        
+                        # If it's an audio file, try audio analysis
+                        elif mime_type and 'audio' in mime_type:
+                            logger.debug("Starting audio analysis...")
+                            try:
+                                from modules.stego.audio import analyze_audio, analyze_spectrogram
+                                audio_results = analyze_audio(file_path)
+                                if audio_results:
+                                    logger.debug("Audio analysis returned results")
+                                    self.auto_results.append("\n=== Audio Analysis ===\n")
+                                    self.auto_results.append(str(audio_results))
+                                
+                                # Also analyze spectrogram
+                                logger.debug("Starting spectrogram analysis...")
+                                spec_results = analyze_spectrogram(file_path)
+                                if spec_results:
+                                    logger.debug("Spectrogram analysis returned results")
+                                    self.auto_results.append("\n=== Spectrogram Analysis ===\n")
+                                    self.auto_results.append(str(spec_results))
+                            except Exception as e:
+                                logger.error(f"Audio analysis failed: {str(e)}")
+                                logger.error(traceback.format_exc())
+                                self.auto_results.append(f"\nAudio analysis failed: {str(e)}")
+                        
+                        logger.debug("Binary file analysis complete")
+                
+                except Exception as e:
+                    logger.error(f"Error during file analysis: {str(e)}")
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    raise
+                
+            logger.debug("Analysis completed successfully")
+            self.hide_progress()
             
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Analysis failed: {str(e)}")
+            self.hide_progress()
+            error_msg = f"Analysis failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            QMessageBox.warning(self, "Error", error_msg)
             return
         
     def create_crypto_tab(self):
@@ -1950,17 +2219,26 @@ class MainWindow(QMainWindow):
             line_edit.setText(file_path)
     
     def analyze_forensics(self):
+        """Process forensics analysis"""
         file_path = self.forensics_file_path.text()
         if not file_path:
             QMessageBox.warning(self, "Warning", "Please select a file")
             return
             
         try:
+            logger.debug(f"Starting forensics analysis on file: {file_path}")
+            self.show_progress("Forensics Analysis")
+            self.progress_window.set_status("Starting forensics analysis...")
+            
             self.forensics_results.setPlainText("Analyzing file...")
             QApplication.processEvents()  # Update UI
             
             # Get file type to determine which tools to use
+            if self.check_analysis_stopped():
+                return
+                
             mime_type, _ = mimetypes.guess_type(file_path)
+            logger.debug(f"Detected MIME type: {mime_type}")
             
             # Configure which external tools to use
             use_external_tools = any([
@@ -1971,49 +2249,110 @@ class MainWindow(QMainWindow):
                 self.check_stegsolve.isChecked(),
                 self.check_zsteg.isChecked()
             ])
+            logger.debug(f"Using external tools: {use_external_tools}")
             
             # Create temporary directory for tool outputs
             with tempfile.TemporaryDirectory() as temp_dir:
+                logger.debug(f"Created temp directory: {temp_dir}")
                 results = {}
-                
-                # Run built-in analysis
-                results, formatted_results = analyze_file(
-                    file_path,
-                    use_external_tools=use_external_tools
-                )
-                
-                # Check if file is compressed
-                if results['compression_info']['is_compressed']:
-                    comp_info = results['compression_info']
-                    self.extracted_files_list.show()
-                    self.extracted_files_list.setPlainText(
-                        f"Compressed file detected ({comp_info['compression_type']}):\n" +
-                        "\n".join(f"- {item}" for item in comp_info['contents'][:10]) +
-                        (f"\n... and {len(comp_info['contents']) - 10} more files" 
-                         if len(comp_info['contents']) > 10 else "")
+                    
+                try:
+                    # Run built-in analysis
+                    logger.debug("Starting built-in analysis...")
+                    self.progress_window.set_status("Running built-in analysis...")
+                    self.progress_window.progress_bar.setValue(10)
+                    QApplication.processEvents()
+                    
+                    if self.check_analysis_stopped():
+                        return
+                        
+                    results, formatted_results = analyze_file(
+                        file_path,
+                        use_external_tools=use_external_tools
                     )
-                else:
-                    self.extracted_files_list.hide()
-                
-                self.forensics_results.setPlainText(formatted_results)
+                    
+                    if self.check_analysis_stopped():
+                        return
+                        
+                    logger.debug("Built-in analysis completed")
+                    self.progress_window.progress_bar.setValue(50)
+                    QApplication.processEvents()
+                        
+                    # Check if file is compressed
+                    if results.get('compression_info', {}).get('is_compressed'):
+                        comp_info = results['compression_info']
+                        logger.debug(f"Detected compressed file: {comp_info['compression_type']}")
+                        self.progress_window.set_status("Analyzing compressed file contents...")
+                        self.progress_window.progress_bar.setValue(75)
+                        QApplication.processEvents()
+                        
+                        self.extracted_files_list.show()
+                        self.extracted_files_list.setPlainText(
+                            f"Compressed file detected ({comp_info['compression_type']}):\n" +
+                            "\n".join(f"- {item}" for item in comp_info['contents'][:10]) +
+                            (f"\n... and {len(comp_info['contents']) - 10} more files" 
+                             if len(comp_info['contents']) > 10 else "")
+                        )
+                    else:
+                        logger.debug("No compression detected")
+                        self.extracted_files_list.hide()
+                    
+                    self.progress_window.progress_bar.setValue(90)
+                    self.progress_window.set_status("Formatting results...")
+                    QApplication.processEvents()
+                        
+                    self.forensics_results.setPlainText(formatted_results)
+                        
+                except Exception as e:
+                    logger.error(f"Error during analysis: {str(e)}")
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    raise
+                    
+            logger.debug("Forensics analysis completed")
+            self.progress_window.progress_bar.setValue(100)
+            self.progress_window.set_status("Analysis complete")
+            QApplication.processEvents()
+            self.hide_progress()
             
         except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
-            self.forensics_results.setPlainText(f"Error during analysis: {str(e)}")
-    
+            self.hide_progress()
+            error_msg = f"Error during analysis: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
+            self.forensics_results.setPlainText(error_msg)
+
+    def update_forensics_progress(self, current_tool: str, progress: int = -1):
+        """Update progress window with forensics analysis progress"""
+        if not self.analysis_running:
+            return False  # Signal to stop analysis
+            
+        if progress >= 0:
+            self.progress_window.progress_bar.setValue(progress)
+        self.progress_window.set_status(f"Running: {current_tool}")
+        QApplication.processEvents()
+        return True  # Continue analysis
+
     def extract_forensics(self):
+        """Extract contents from forensics analysis"""
         file_path = self.forensics_file_path.text()
         if not file_path:
             QMessageBox.warning(self, "Warning", "Please select a file")
             return
         
         try:
+            self.show_progress("Forensics Extraction")
+            self.progress_window.set_status("Starting extraction...")
+            
             # First check if file is compressed
+            if self.check_analysis_stopped():
+                return
+                
             comp_info = check_compression(file_path)
             
             # Get output directory
             output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
             if not output_dir:
+                self.hide_progress()
                 return
             
             self.forensics_results.setPlainText("Extracting contents...")
@@ -2024,13 +2363,21 @@ class MainWindow(QMainWindow):
             
             # Extract with built-in tools if compressed
             if comp_info['is_compressed']:
+                if self.check_analysis_stopped():
+                    return
+                    
+                self.progress_window.set_status("Extracting compressed contents...")
                 extract_results = extract_compressed(file_path, output_dir)
                 if extract_results['success']:
                     results.append(f"Successfully extracted {len(extract_results['extracted_files'])} files")
-                    
+            
             # Try steghide if enabled
             if self.check_steghide.isChecked():
+                if self.check_analysis_stopped():
+                    return
+                    
                 try:
+                    self.progress_window.set_status("Running Steghide extraction...")
                     password = self.steghide_password.text() or None
                     steghide_results = run_steghide(file_path, password=password, extract=True)
                     
@@ -2058,7 +2405,11 @@ class MainWindow(QMainWindow):
             
             # Try foremost if enabled
             if self.check_foremost.isChecked():
+                if self.check_analysis_stopped():
+                    return
+                    
                 try:
+                    self.progress_window.set_status("Running Foremost extraction...")
                     foremost_dir = os.path.join(output_dir, 'foremost')
                     foremost_results = run_foremost(file_path, foremost_dir)
                     if foremost_results['success']:
@@ -2070,7 +2421,11 @@ class MainWindow(QMainWindow):
             
             # Try binwalk if enabled
             if self.check_binwalk.isChecked():
+                if self.check_analysis_stopped():
+                    return
+                    
                 try:
+                    self.progress_window.set_status("Running Binwalk extraction...")
                     binwalk_results = run_binwalk(file_path, extract=True)
                     if binwalk_results['success'] and binwalk_results['extracted_files']:
                         results.append(
@@ -2088,7 +2443,10 @@ class MainWindow(QMainWindow):
             else:
                 self.forensics_results.setPlainText("No data could be extracted")
                 
+            self.hide_progress()
+                
         except Exception as e:
+            self.hide_progress()
             QMessageBox.critical(self, "Error", str(e))
             self.forensics_results.setPlainText(f"Error during extraction: {str(e)}")
     
@@ -2983,18 +3341,942 @@ class MainWindow(QMainWindow):
         help_dialog.setTextFormat(Qt.TextFormat.RichText)
         help_dialog.exec()
 
+    def show_progress(self, title="Processing"):
+        if not self.progress_window:
+            self.progress_window = ProgressWindow(self)
+            self.progress_window.stop_button.clicked.connect(self.stop_analysis)
+        self.progress_window.setWindowTitle(title)
+        self.analysis_running = True
+        self.progress_window.show()
+        self.progress_window.raise_()
+        QApplication.processEvents()
+        
+    def hide_progress(self):
+        if self.progress_window:
+            self.progress_window.hide()
+            self.analysis_running = False
+            # Reset the stop button state
+            self.progress_window.stop_button.setEnabled(True)
+            self.progress_window.stop_button.setText("Stop Analysis")
+            # Clear the progress window reference
+            self.progress_window = None
+            QApplication.processEvents()
+            
+    def stop_analysis(self):
+        """Stop the current analysis task"""
+        logger.info("Analysis stop requested by user")
+        self.analysis_running = False
+        if self.progress_window:
+            self.progress_window.set_status("Stopping analysis...")
+            self.progress_window.stop_button.setEnabled(False)
+            self.progress_window.stop_button.setText("Stopping...")
+            QApplication.processEvents()
+            # Force close after a short delay to ensure UI updates
+            QTimer.singleShot(500, self.hide_progress)
+            
+    def check_analysis_stopped(self):
+        """Check if analysis should be stopped and handle UI updates"""
+        if not self.analysis_running:
+            logger.info("Analysis stopped by user")
+            self.hide_progress()
+            self.auto_results.append("\n=== Analysis stopped by user ===\n")
+            return True
+        return False
+
+    def create_hash_tab(self):
+        """Create the Hash Cracking tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(15)
+        
+        # Input section
+        input_group = QGroupBox("Hash Input")
+        input_layout = QVBoxLayout()
+        
+        # Hash input
+        self.hash_input = QTextEdit()
+        self.hash_input.setPlaceholderText("Enter hash to crack...")
+        self.hash_input.setMaximumHeight(100)
+        self.hash_input.textChanged.connect(self.identify_hash)
+        input_layout.addWidget(self.hash_input)
+        
+        # Hash identification result
+        self.hash_type_label = QLabel("Hash Type: Waiting for input...")
+        self.hash_type_label.setStyleSheet("color: #888888;")
+        input_layout.addWidget(self.hash_type_label)
+        
+        input_group.setLayout(input_layout)
+        layout.addWidget(input_group)
+        
+        # Cracking options
+        options_group = QGroupBox("Cracking Options")
+        options_layout = QVBoxLayout()
+        
+        # Hash type selection
+        hash_type_layout = QHBoxLayout()
+        hash_type_layout.addWidget(QLabel("Hash Type:"))
+        self.hash_type_combo = QComboBox()
+        self.hash_type_combo.addItems([
+            "Auto Detect",
+            "MD5",
+            "SHA1",
+            "SHA256",
+            "SHA512",
+            "NTLM",
+            "MySQL",
+            "BCrypt",
+            "Unix (crypt)"
+        ])
+        hash_type_layout.addWidget(self.hash_type_combo)
+        options_layout.addLayout(hash_type_layout)
+        
+        # Attack method selection
+        attack_layout = QHBoxLayout()
+        attack_layout.addWidget(QLabel("Attack Method:"))
+        self.attack_combo = QComboBox()
+        self.attack_combo.addItems([
+            "Dictionary Attack",
+            "Brute Force",
+            "Rainbow Table",
+            "Common Password List"
+        ])
+        self.attack_combo.currentTextChanged.connect(self.update_attack_options)
+        attack_layout.addWidget(self.attack_combo)
+        options_layout.addLayout(attack_layout)
+        
+        # Dictionary file selection
+        self.dict_container = QWidget()
+        dict_layout = QHBoxLayout(self.dict_container)
+        self.dict_path = QLineEdit()
+        self.dict_path.setPlaceholderText("Select dictionary file...")
+        browse_dict_btn = QPushButton("Browse")
+        browse_dict_btn.clicked.connect(lambda: self.browse_file(self.dict_path, "Text files (*.txt)"))
+        dict_layout.addWidget(self.dict_path)
+        dict_layout.addWidget(browse_dict_btn)
+        options_layout.addWidget(self.dict_container)
+        
+        # Brute force options
+        self.brute_container = QWidget()
+        brute_layout = QVBoxLayout(self.brute_container)
+        
+        # Character set selection
+        charset_layout = QHBoxLayout()
+        charset_layout.addWidget(QLabel("Character Set:"))
+        self.hash_charset_combo = QComboBox()
+        self.hash_charset_combo.addItems([
+            "Lowercase [a-z]",
+            "Uppercase [A-Z]",
+            "Numeric [0-9]",
+            "Alpha [A-Za-z]",
+            "Alphanumeric [A-Za-z0-9]",
+            "All Printable",
+            "Custom"
+        ])
+        charset_layout.addWidget(self.hash_charset_combo)
+        brute_layout.addLayout(charset_layout)
+        
+        # Custom charset input
+        self.custom_charset = QLineEdit()
+        self.custom_charset.setPlaceholderText("Enter custom character set...")
+        self.custom_charset.setEnabled(False)
+        brute_layout.addWidget(self.custom_charset)
+        
+        # Length range
+        length_layout = QHBoxLayout()
+        length_layout.addWidget(QLabel("Length Range:"))
+        self.min_length = QSpinBox()
+        self.min_length.setRange(1, 16)
+        self.min_length.setValue(1)
+        length_layout.addWidget(self.min_length)
+        length_layout.addWidget(QLabel("to"))
+        self.max_length = QSpinBox()
+        self.max_length.setRange(1, 16)
+        self.max_length.setValue(8)
+        length_layout.addWidget(self.max_length)
+        brute_layout.addLayout(length_layout)
+        
+        options_layout.addWidget(self.brute_container)
+        self.brute_container.hide()
+        
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+        
+        # Action buttons
+        button_layout = QHBoxLayout()
+        
+        # Local cracking buttons
+        self.start_crack_btn = QPushButton("Start Cracking")
+        self.start_crack_btn.clicked.connect(self.start_hash_cracking)
+        self.stop_crack_btn = QPushButton("Stop")
+        self.stop_crack_btn.setEnabled(False)
+        self.stop_crack_btn.clicked.connect(self.stop_hash_cracking)
+        
+        # CrackStation button
+        self.crackstation_btn = QPushButton("Try on CrackStation")
+        self.crackstation_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2980b9;
+                color: white;
+                border: none;
+                padding: 5px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #3498db;
+            }
+            QPushButton:pressed {
+                background-color: #2475a8;
+            }
+        """)
+        self.crackstation_btn.clicked.connect(lambda: self._open_crackstation(self.hash_input.toPlainText().strip()))
+        
+        button_layout.addWidget(self.start_crack_btn)
+        button_layout.addWidget(self.stop_crack_btn)
+        button_layout.addWidget(self.crackstation_btn)
+        layout.addLayout(button_layout)
+        
+        # Results
+        results_group = QGroupBox("Results")
+        results_layout = QVBoxLayout()
+        
+        self.hash_results = QTextEdit()
+        self.hash_results.setReadOnly(True)
+        results_layout.addWidget(self.hash_results)
+        
+        results_group.setLayout(results_layout)
+        layout.addWidget(results_group)
+        
+        return widget
+        
+    def identify_hash(self):
+        """Identify hash type in real-time for the hash tab"""
+        hash_text = self.hash_input.toPlainText().strip()
+        if not hash_text:
+            self.hash_type_label.setText("Hash Type: Waiting for input...")
+            self.hash_type_label.setStyleSheet("color: #888888;")
+            return []
+            
+        possible_types = self._identify_hash_string(hash_text)
+        
+        if possible_types:
+            # Map hash types to their speeds
+            speed_map = {
+                'MD5': 'Fast',
+                'SHA1': 'Fast',
+                'SHA256': 'Medium',
+                'SHA512': 'Slow',
+                'NTLM': 'Fast',
+                'BCrypt': 'Very Slow',
+                'Unix Crypt': 'Medium',
+                'MySQL': 'Fast'
+            }
+            
+            types_with_speed = [(t, speed_map[t]) for t in possible_types]
+            types_str = ", ".join(f"{t} ({s})" for t, s in types_with_speed)
+            self.hash_type_label.setText(f"Possible Hash Types: {types_str}")
+            
+            # Set warning color based on slowest possible hash
+            speeds = [s for _, s in types_with_speed]
+            if 'Very Slow' in speeds:
+                self.hash_type_label.setStyleSheet("color: #e74c3c;")  # Red
+            elif 'Slow' in speeds:
+                self.hash_type_label.setStyleSheet("color: #f39c12;")  # Orange
+            elif 'Medium' in speeds:
+                self.hash_type_label.setStyleSheet("color: #f1c40f;")  # Yellow
+            else:
+                self.hash_type_label.setStyleSheet("color: #2ecc71;")  # Green
+                
+            # Auto-select hash type if only one possibility
+            if len(possible_types) == 1:
+                index = self.hash_type_combo.findText(possible_types[0])
+                if index >= 0:
+                    self.hash_type_combo.setCurrentIndex(index)
+        else:
+            self.hash_type_label.setText("Unknown hash type")
+            self.hash_type_label.setStyleSheet("color: #e74c3c;")
+            
+        return possible_types
+
+    def update_attack_options(self):
+        """Update available options based on attack method"""
+        method = self.attack_combo.currentText()
+        
+        # Show/hide dictionary file selection
+        self.dict_container.setVisible(method == "Dictionary Attack")
+        
+        # Show/hide brute force options
+        self.brute_container.setVisible(method == "Brute Force")
+        
+        # Enable/disable charset input based on selection
+        if method == "Brute Force":
+            self.hash_charset_combo.currentTextChanged.connect(
+                lambda x: self.custom_charset.setEnabled(x == "Custom")
+            )
+            
+    def start_hash_cracking(self):
+        """Start the hash cracking process"""
+        hash_text = self.hash_input.toPlainText().strip()
+        if not hash_text:
+            QMessageBox.warning(self, "Warning", "Please enter a hash to crack")
+            return
+            
+        hash_type = self.hash_type_combo.currentText()
+        attack_method = self.attack_combo.currentText()
+        
+        # Show progress window
+        self.hash_results.clear()
+        self.start_crack_btn.setEnabled(False)
+        self.stop_crack_btn.setEnabled(True)
+        self.show_progress("Hash Cracking")
+        
+        # Initialize crack start time
+        self.crack_start_time = time.time()
+        
+        # Debug output
+        debug_info = f"""
+[DEBUG] Starting hash cracking:
+- Hash: {hash_text}
+- Type: {hash_type}
+- Method: {attack_method}
+"""
+        self.hash_results.append(debug_info)
+        logger.debug(debug_info)
+        
+        # Start local cracking
+        if attack_method == "Dictionary Attack":
+            self._start_dictionary_attack(hash_text, hash_type)
+        elif attack_method == "Brute Force":
+            self._start_brute_force(hash_text, hash_type)
+        elif attack_method == "Rainbow Table":
+            self._start_rainbow_table(hash_text, hash_type)
+        elif attack_method == "Common Password List":
+            self._start_common_passwords(hash_text, hash_type)
+            
+    def _start_dictionary_attack(self, hash_text: str, hash_type: str):
+        """Start dictionary attack with progress tracking"""
+        dict_path = self.dict_path.text()
+        if not dict_path:
+            # Create downloads directory path
+            downloads_dir = os.path.join(os.path.dirname(__file__), "downloads")
+            rockyou_path = os.path.join(downloads_dir, "rockyou.txt")
+            
+            # Show dialog asking to download rockyou.txt
+            msg = QMessageBox(self.progress_window)  # Set progress_window as parent
+            msg.setWindowFlags(msg.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)  # Keep on top
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setWindowTitle("No Dictionary Selected")
+            msg.setText("Would you like to download rockyou.txt?")
+            msg.setInformativeText(
+                "rockyou.txt is a commonly used password list:\n"
+                "• Size: ~133MB\n"
+                "• Contains: 14+ million passwords\n"
+                "• Will be saved to: " + rockyou_path + "\n\n"
+                "You can also select your own dictionary file using the Browse button."
+            )
+            msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            
+            if msg.exec() == QMessageBox.StandardButton.Yes:
+                # Create downloads directory
+                os.makedirs(downloads_dir, exist_ok=True)
+                
+                try:
+                    import requests
+                    
+                    url = "https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt"
+                    response = requests.get(url, stream=True)
+                    total_size = int(response.headers.get('content-length', 0))
+                    
+                    with open(rockyou_path, 'wb') as f:
+                        downloaded = 0
+                        for data in response.iter_content(chunk_size=8192):
+                            downloaded += len(data)
+                            f.write(data)
+                            if total_size:
+                                progress = int((downloaded / total_size) * 100)
+                                self.progress_window.update_progress(
+                                    downloaded, total_size,
+                                    f"Downloading: {downloaded/1024/1024:.1f}MB / {total_size/1024/1024:.1f}MB"
+                                )
+                    
+                    # Set the path in the UI and inform user
+                    self.dict_path.setText(rockyou_path)
+                    self.hash_results.append(f"\n[+] Downloaded rockyou.txt to: {rockyou_path}")
+                    self.hash_results.append("[*] Click Start Cracking to begin the attack")
+                    
+                except Exception as e:
+                    self.hash_results.append(f"\n[!] Error downloading rockyou.txt: {str(e)}")
+                
+            self.stop_hash_cracking()
+            return
+            
+        # Continue with dictionary attack if a path is selected
+        if not os.path.exists(dict_path):
+            self.hash_results.append("\n[!] Dictionary file not found!")
+            self.stop_hash_cracking()
+            return
+            
+        try:
+            # Count total words for progress tracking
+            total_words = sum(1 for _ in open(dict_path, 'r', encoding='utf-8', errors='ignore'))
+            current_word = 0
+            
+            self.hash_results.append(f"\n[*] Starting dictionary attack with {total_words:,} words")
+            
+            with open(dict_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for word in f:
+                    if self.check_analysis_stopped():
+                        return
+                        
+                    word = word.strip()
+                    current_word += 1
+                    
+                    if current_word % 1000 == 0:
+                        progress = int((current_word / total_words) * 100)
+                        self.progress_window.update_progress(current_word, total_words, f"Trying word {current_word:,} of {total_words:,}")
+                        
+                    # Debug output every 10000 words
+                    if current_word % 10000 == 0:
+                        self.hash_results.append(f"[DEBUG] Processed {current_word:,} words...")
+                        
+                    # Check if this password matches
+                    if self._check_hash(word, hash_text, hash_type):
+                        self._handle_hash_match(word, hash_text, hash_type)
+                        return
+                    
+            self.hash_results.append("\n[*] Dictionary attack complete - no matches found")
+            
+        except Exception as e:
+            self.hash_results.append(f"\n[!] Error during dictionary attack: {str(e)}")
+            logger.error(f"Dictionary attack error: {str(e)}")
+            
+        finally:
+            self.stop_hash_cracking()
+    
+    def stop_hash_cracking(self):
+        """Stop the hash cracking process"""
+        self.analysis_running = False
+        self.stop_crack_btn.setEnabled(False)
+        self.start_crack_btn.setEnabled(True)
+        self.hide_progress()
+        self.hash_results.append("\nHash cracking stopped by user")
+
+    def _start_brute_force(self, hash_text: str, hash_type: str):
+        """Start brute force attack with progress tracking"""
+        charset_type = self.hash_charset_combo.currentText()
+        min_len = self.min_length.value()
+        max_len = self.max_length.value()
+        
+        # Get character set
+        if charset_type == "Custom":
+            charset = self.custom_charset.text()
+            if not charset:
+                QMessageBox.warning(self, "Error", "Please enter a custom character set")
+                self.stop_hash_cracking()
+                return
+        else:
+            charsets = {
+                "Lowercase [a-z]": string.ascii_lowercase,
+                "Uppercase [A-Z]": string.ascii_uppercase,
+                "Numeric [0-9]": string.digits,
+                "Alpha [A-Za-z]": string.ascii_letters,
+                "Alphanumeric [A-Za-z0-9]": string.ascii_letters + string.digits,
+                "All Printable": string.printable
+            }
+            charset = charsets.get(charset_type, string.ascii_letters + string.digits)
+            
+        # Debug output
+        debug_info = f"""
+[DEBUG] Starting brute force:
+- Character set: {charset_type} ({len(charset)} chars)
+- Length range: {min_len} to {max_len}
+- Hash type: {hash_type}
+"""
+        self.hash_results.append(debug_info)
+        logger.debug(debug_info)
+        
+        try:
+            from itertools import product
+            
+            # Calculate total combinations for progress tracking
+            total_combinations = sum(len(charset) ** length 
+                                  for length in range(min_len, max_len + 1))
+            
+            current = 0
+            start_time = time.time()
+            
+            self.hash_results.append(f"\n[*] Starting brute force with {total_combinations:,} combinations")
+            
+            # Try each length
+            for length in range(min_len, max_len + 1):
+                if self.check_analysis_stopped():
+                    return
+                    
+                self.hash_results.append(f"\n[+] Trying length {length}...")
+                length_combinations = len(charset) ** length
+                
+                # Generate and try combinations
+                for attempt in product(charset, repeat=length):
+                    if self.check_analysis_stopped():
+                        return
+                        
+                    current += 1
+                    password = ''.join(attempt)
+                    
+                    # Update progress every 1000 attempts
+                    if current % 1000 == 0:
+                        elapsed = time.time() - start_time
+                        rate = current / elapsed if elapsed > 0 else 0
+                        eta = (total_combinations - current) / rate if rate > 0 else 0
+                        
+                        progress = int((current / total_combinations) * 100)
+                        status = (f"Length {length}: {current:,}/{total_combinations:,} "
+                                f"({rate:.0f} h/s, ETA: {eta/3600:.1f}h)")
+                        self.progress_window.update_progress(current, total_combinations, status)
+                        
+                        # Debug output every 100000 attempts
+                        if current % 100000 == 0:
+                            self.hash_results.append(
+                                f"[DEBUG] Rate: {rate:.0f} h/s, "
+                                f"Progress: {progress}%, "
+                                f"Current: {password}")
+                            
+                    # Check if this password matches
+                    if self._check_hash(password, hash_text, hash_type):
+                        self._handle_hash_match(password, hash_text, hash_type)
+                        return
+                    
+            self.hash_results.append("\n[*] Brute force complete - no matches found")
+            
+        except Exception as e:
+            self.hash_results.append(f"\n[!] Error during brute force: {str(e)}")
+            logger.error(f"Brute force error: {str(e)}")
+            
+        finally:
+            self.stop_hash_cracking()
+            
+    def _start_rainbow_table(self, hash_text: str, hash_type: str):
+        """Start rainbow table attack with progress tracking"""
+        self.hash_results.append("\n[*] Starting rainbow table attack")
+        
+        try:
+            # Check for local rainbow tables
+            table_dir = os.path.join(os.path.dirname(__file__), "rainbow_tables", hash_type.lower())
+            if not os.path.exists(table_dir):
+                self.hash_results.append("[*] No local rainbow tables found")
+                self.hash_results.append("[+] Attempting to download rainbow table...")
+                table_dir = self._download_rainbow_table(hash_type)
+                if not table_dir:
+                    return
+                    
+            # Find all .rt files
+            tables = []
+            for root, _, files in os.walk(table_dir):
+                tables.extend(os.path.join(root, f) for f in files if f.endswith('.rt'))
+                
+            if not tables:
+                self.hash_results.append("[!] No rainbow tables found after download")
+                return
+                
+            self.hash_results.append(f"\n[+] Found {len(tables)} rainbow tables")
+            
+            # Process each table
+            for table in tables:
+                if self.check_analysis_stopped():
+                    return
+                    
+                table_name = os.path.basename(table)
+                self.hash_results.append(f"\n[+] Processing {table_name}...")
+                
+                try:
+                    # Use rcrack from the system if available
+                    import subprocess
+                    
+                    self.progress_window.set_status(f"Checking {table_name}...")
+                    process = subprocess.Popen(
+                        ["rcrack", table, "-h", hash_text],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    
+                    while True:
+                        line = process.stdout.readline()
+                        if not line and process.poll() is not None:
+                            break
+                        if "hex:" in line.lower():
+                            # Found the password
+                            password = line.split("hex:")[1].strip()
+                            self._handle_hash_match(password, hash_text, hash_type)
+                            return
+                            
+                except FileNotFoundError:
+                    self.hash_results.append("[!] rcrack tool not found in system")
+                    self.hash_results.append("    Please install RainbowCrack tools:")
+                    self.hash_results.append("    - Windows: http://project-rainbowcrack.com/")
+                    self.hash_results.append("    - Linux: sudo apt install rainbowcrack")
+                    return
+                except Exception as e:
+                    self.hash_results.append(f"[!] Error processing table: {str(e)}")
+                    continue
+                    
+            self.hash_results.append("\n[*] Rainbow table attack complete - no matches found")
+            
+        except Exception as e:
+            self.hash_results.append(f"\n[!] Error during rainbow table attack: {str(e)}")
+            logger.error(f"Rainbow table error: {str(e)}")
+            
+        finally:
+            self.stop_hash_cracking()
+            
+    def _start_common_passwords(self, hash_text: str, hash_type: str):
+        """Start attack using common password lists from online sources"""
+        self.hash_results.append("\n[*] Starting common password attack")
+        
+        # Common password list URLs
+        password_lists = {
+            "SecLists Top 10000": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10-million-password-list-top-10000.txt",
+            "NordPass Top 200": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/nordpass-top-200.txt",
+            "Most Common Wifi": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/WiFi-WPA/probable-v2-wpa-top4800.txt"
+        }
+        
+        try:
+            import requests
+            import tempfile
+            
+            for list_name, url in password_lists.items():
+                if self.check_analysis_stopped():
+                    return
+                    
+                self.hash_results.append(f"\n[+] Downloading {list_name}...")
+                self.progress_window.set_status(f"Downloading {list_name}...")
+                
+                try:
+                    response = requests.get(url)
+                    passwords = response.text.splitlines()
+                    
+                    self.hash_results.append(f"    - Got {len(passwords):,} passwords")
+                    self.progress_window.set_status(f"Checking {list_name}...")
+                    
+                    # Try each password
+                    for i, password in enumerate(passwords):
+                        if self.check_analysis_stopped():
+                            return
+                            
+                        if i % 100 == 0:
+                            progress = int((i / len(passwords)) * 100)
+                            self.progress_window.update_progress(i, len(passwords))
+                            
+                        # Check if this password matches
+                        if self._check_hash(password, hash_text, hash_type):
+                            self._handle_hash_match(password, hash_text, hash_type)
+                            return
+                        
+                except Exception as e:
+                    self.hash_results.append(f"    [!] Error with {list_name}: {str(e)}")
+                    continue
+                    
+            self.hash_results.append("\n[*] Common password attack complete - no matches found")
+            
+        except Exception as e:
+            self.hash_results.append(f"\n[!] Error during common password attack: {str(e)}")
+            logger.error(f"Common password attack error: {str(e)}")
+            
+        finally:
+            self.stop_hash_cracking()
+
+    def _check_hash(self, password: str, hash_text: str, hash_type: str) -> bool:
+        """Check if a password matches the target hash"""
+        import hashlib
+        
+        try:
+            # Convert password to bytes if needed
+            if isinstance(password, str):
+                password = password.encode('utf-8')
+                
+            # Calculate hash based on type
+            if hash_type == "MD5":
+                calculated = hashlib.md5(password).hexdigest()
+            elif hash_type == "SHA1":
+                calculated = hashlib.sha1(password).hexdigest()
+            elif hash_type == "SHA256":
+                calculated = hashlib.sha256(password).hexdigest()
+            elif hash_type == "SHA512":
+                calculated = hashlib.sha512(password).hexdigest()
+            elif hash_type == "BCrypt":
+                try:
+                    import bcrypt
+                    return bcrypt.checkpw(password, hash_text.encode('utf-8'))
+                except ImportError:
+                    self.hash_results.append("\n[!] BCrypt module not installed. Install with: pip install bcrypt")
+                    return False
+                except Exception:
+                    return False
+            elif hash_type == "Unix Crypt":
+                try:
+                    if os.name != 'posix':
+                        self.hash_results.append("\n[!] Unix Crypt only supported on Linux/Unix systems")
+                        return False
+                    import crypt
+                    return crypt.crypt(password.decode('utf-8'), hash_text) == hash_text
+                except ImportError:
+                    self.hash_results.append("\n[!] Crypt module not available on this system")
+                    return False
+                except Exception:
+                    return False
+            elif hash_type == "NTLM":
+                try:
+                    import passlib.hash
+                    return passlib.hash.nthash.verify(password, hash_text)
+                except ImportError:
+                    self.hash_results.append("\n[!] Passlib module not installed. Install with: pip install passlib")
+                    return False
+                except Exception:
+                    return False
+            elif hash_type == "MySQL":
+                try:
+                    import passlib.hash
+                    return passlib.hash.mysql41.verify(password, hash_text)
+                except ImportError:
+                    self.hash_results.append("\n[!] Passlib module not installed. Install with: pip install passlib")
+                    return False
+                except Exception:
+                    return False
+            else:
+                # Default to SHA256
+                calculated = hashlib.sha256(password).hexdigest()
+                
+            # Compare hashes
+            return calculated.lower() == hash_text.lower()
+            
+        except Exception as e:
+            logger.error(f"Hash check error: {str(e)}")
+            return False
+            
+    def _handle_hash_match(self, password: str, hash_text: str, hash_type: str):
+        """Handle a successful hash match"""
+        match_info = f"""
+[!] HASH CRACKED!
+    Hash: {hash_text}
+    Type: {hash_type}
+    Password: {password}
+    Time taken: {time.time() - self.crack_start_time:.2f} seconds
+"""
+        self.hash_results.append(match_info)
+        logger.info(f"Hash cracked: {hash_text} = {password}")
+        
+        # Stop cracking first
+        self.stop_hash_cracking()
+        
+        # Show success message after stopping
+        QMessageBox.information(self, "Success", 
+            f"Hash cracked!\nPassword: {password}")
+
+    def _open_crackstation(self, hash_text: str):
+        """Open CrackStation website in default browser"""
+        import webbrowser
+        url = f"https://crackstation.net/"
+        try:
+            webbrowser.open(url)
+            self.hash_results.append("\n[*] Opened CrackStation in your browser")
+            self.hash_results.append("[*] Supported hash types: MD5, SHA1, SHA256, SHA512, and more")
+        except Exception as e:
+            self.hash_results.append(f"\n[!] Error opening browser: {str(e)}")
+            logger.error(f"Browser open error: {str(e)}")
+            
+    def _download_rainbow_table(self, hash_type: str) -> Optional[str]:
+        """Download a rainbow table for the given hash type"""
+        import requests
+        import tempfile
+        import zipfile
+        
+        try:
+            # Small rainbow tables from public sources
+            tables = {
+                "MD5": "https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt",
+                "SHA1": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Leaked-Databases/rockyou-75.txt",
+                "NTLM": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Software/windows-keyboard-shortcuts.txt"
+            }
+            
+            if hash_type not in tables:
+                self.hash_results.append(f"[!] No rainbow table available for {hash_type}")
+                return None
+                
+            url = tables[hash_type]
+            self.hash_results.append(f"[+] Downloading rainbow table for {hash_type}...")
+            self.progress_window.set_status(f"Downloading {hash_type} rainbow table...")
+            
+            # Download with progress tracking
+            response = requests.get(url, stream=True)
+            total_size = int(response.headers.get('content-length', 0))
+            
+            # Create rainbow tables directory
+            table_dir = os.path.join(os.path.dirname(__file__), "rainbow_tables", hash_type.lower())
+            os.makedirs(table_dir, exist_ok=True)
+            
+            # Download and extract
+            with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                downloaded = 0
+                for data in response.iter_content(chunk_size=4096):
+                    downloaded += len(data)
+                    tmp_file.write(data)
+                    if total_size:
+                        progress = int((downloaded / total_size) * 100)
+                        self.progress_window.update_progress(
+                            downloaded, total_size,
+                            f"Downloading {downloaded/1024/1024:.1f} MB / {total_size/1024/1024:.1f} MB"
+                        )
+                        
+            # Extract the zip file
+            self.hash_results.append("[+] Extracting rainbow table...")
+            self.progress_window.set_status("Extracting rainbow table...")
+            with zipfile.ZipFile(tmp_file.name, 'r') as zip_ref:
+                zip_ref.extractall(table_dir)
+                
+            # Clean up temp file
+            os.unlink(tmp_file.name)
+            
+            self.hash_results.append(f"[+] Rainbow table installed in {table_dir}")
+            return table_dir
+            
+        except Exception as e:
+            self.hash_results.append(f"[!] Error downloading rainbow table: {str(e)}")
+            logger.error(f"Rainbow table download error: {str(e)}")
+            return None
+            
+    def _start_rainbow_table(self, hash_text: str, hash_type: str):
+        """Start rainbow table attack with progress tracking"""
+        self.hash_results.append("\n[*] Starting rainbow table attack")
+        
+        try:
+            # Check for local rainbow tables
+            table_dir = os.path.join(os.path.dirname(__file__), "rainbow_tables", hash_type.lower())
+            if not os.path.exists(table_dir):
+                self.hash_results.append("[*] No local rainbow tables found")
+                self.hash_results.append("[+] Attempting to download rainbow table...")
+                table_dir = self._download_rainbow_table(hash_type)
+                if not table_dir:
+                    return
+                    
+            # Find all .rt files
+            tables = []
+            for root, _, files in os.walk(table_dir):
+                tables.extend(os.path.join(root, f) for f in files if f.endswith('.rt'))
+                
+            if not tables:
+                self.hash_results.append("[!] No rainbow tables found after download")
+                return
+                
+            self.hash_results.append(f"\n[+] Found {len(tables)} rainbow tables")
+            
+            # Process each table
+            for table in tables:
+                if self.check_analysis_stopped():
+                    return
+                    
+                table_name = os.path.basename(table)
+                self.hash_results.append(f"\n[+] Processing {table_name}...")
+                
+                try:
+                    # Use rcrack from the system if available
+                    import subprocess
+                    
+                    self.progress_window.set_status(f"Checking {table_name}...")
+                    process = subprocess.Popen(
+                        ["rcrack", table, "-h", hash_text],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    
+                    while True:
+                        line = process.stdout.readline()
+                        if not line and process.poll() is not None:
+                            break
+                        if "hex:" in line.lower():
+                            # Found the password
+                            password = line.split("hex:")[1].strip()
+                            self._handle_hash_match(password, hash_text, hash_type)
+                            return
+                            
+                except FileNotFoundError:
+                    self.hash_results.append("[!] rcrack tool not found in system")
+                    self.hash_results.append("    Please install RainbowCrack tools:")
+                    self.hash_results.append("    - Windows: http://project-rainbowcrack.com/")
+                    self.hash_results.append("    - Linux: sudo apt install rainbowcrack")
+                    return
+                except Exception as e:
+                    self.hash_results.append(f"[!] Error processing table: {str(e)}")
+                    continue
+                    
+            self.hash_results.append("\n[*] Rainbow table attack complete - no matches found")
+            
+        except Exception as e:
+            self.hash_results.append(f"\n[!] Error during rainbow table attack: {str(e)}")
+            logger.error(f"Rainbow table error: {str(e)}")
+            
+        finally:
+            self.stop_hash_cracking()
+
+    def _identify_hash_string(self, hash_text: str) -> List[str]:
+        """Identify possible hash types for a given string"""
+        if not hash_text:
+            return []
+            
+        # Common hash patterns
+        hash_patterns = {
+            'MD5': r'^[a-fA-F0-9]{32}$',
+            'SHA1': r'^[a-fA-F0-9]{40}$',
+            'SHA256': r'^[a-fA-F0-9]{64}$',
+            'SHA512': r'^[a-fA-F0-9]{128}$',
+            'NTLM': r'^[a-fA-F0-9]{32}$',  # Same as MD5 but different context
+            'BCrypt': r'^\$2[ayb]\$.{56}$',
+            'Unix Crypt': r'^\$[156]\$[a-zA-Z0-9./]{4,}\$[a-zA-Z0-9./]{22}$',
+            'MySQL': r'^\*[A-F0-9]{40}$'
+        }
+        
+        possible_types = []
+        for hash_type, pattern in hash_patterns.items():
+            if re.match(pattern, hash_text):
+                possible_types.append(hash_type)
+        
+        return possible_types
+
+def check_requirements():
+    """Check for required modules without showing warnings"""
+    optional_modules = {
+        'bcrypt': 'pip install bcrypt',
+        'passlib': 'pip install passlib',
+    }
+    
+    # Just try importing the modules silently
+    for module, _ in optional_modules.items():
+        try:
+            __import__(module)
+        except ImportError:
+            pass  # Ignore missing optional modules
+
 def main():
-    app = QApplication(sys.argv)
-    apply_stylesheet(app, theme='dark_teal.xml')
-    
-    # Set default font to a monospace font for better formatting
-    font = app.font()
-    font.setFamily('Courier New')
-    app.setFont(font)
-    
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    try:
+        logger.info("Starting application")
+        app = QApplication(sys.argv)
+        apply_stylesheet(app, theme='dark_teal.xml')
+        
+        # Check for required modules
+        check_requirements()
+        
+        # Set default font to a monospace font for better formatting
+        font = app.font()
+        font.setFamily('Courier New')
+        app.setFont(font)
+        
+        window = MainWindow()
+        window.show()
+        logger.info("Application window displayed")
+        sys.exit(app.exec())
+    except Exception as e:
+        logger.critical(f"Application crashed: {str(e)}")
+        logger.critical(f"Traceback: {traceback.format_exc()}")
+        raise
 
 if __name__ == '__main__':
     main() 
