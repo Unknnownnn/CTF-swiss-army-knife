@@ -91,7 +91,20 @@ Python CLI:
    pip uninstall ctf-swiss-army-knife
    ```
 
-
+OR BUILD YOURSELF BY:
+1. Clone\download this repo
+   ```
+   https://github.com/Unknnownnn/CTF-swiss-army-knife.git
+   ```
+2. install dependencies using
+   ```
+   pip install -r requirements.txt
+   ```
+3. Run the gui.py
+   ```
+   python gui.py
+   ```
+   
 ## Dependencies
 
 All required dependencies are bundled with the executable. No additional installation is needed.
