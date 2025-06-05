@@ -41,8 +41,13 @@ Supported Formats: <b>Text, Hexadecimal, Decimal, Binary, Octal, Base64, Base32,
 Supports hex dumb analysis, editing and saving edited files for supported files formats. 
 Also has support to automatically suggest fix for common headers using hex dump of corrupt files for various formats.
 
+### <img src="./misc/hash.png"  width=40 height=40> Hash Cracking
+Supports hash detection and hash cracking based on brute force, dictionary, common passwords and rainbow tables.
+
 ### <img src="./misc/auto.png"  width=40 height=40> Auto Tab
 Includes a one click solution auto tab to automatically find a general or user specified text/string format within the input text/file automatically using various techniques at once and return the string if found. The auto tab may not be able to find flags/strings requiring multiple steps or advanced tools.
+
+
 
 ### Screenshots
 <img src="./misc/autotab.png"  width=600 height=300> 
@@ -73,21 +78,33 @@ Python CLI:
 > venv\Scripts\activate
 >```
 
-1. Ensure python and pip are installed on your device.
-2. Run
+1. Run
    ```
    pip install git+https://github.com/Unknnownnn/CTF-swiss-army-knife.git
    ```
-3. After installing, run
+2. After installing, run
    ```
    ctf-sak
    ```
-4. To uninstall the application, run
+3. To uninstall the application, run
    ```
    pip uninstall ctf-swiss-army-knife
    ```
 
-
+OR BUILD YOURSELF BY:
+1. Clone\download this repo
+   ```
+   https://github.com/Unknnownnn/CTF-swiss-army-knife.git
+   ```
+2. install dependencies using
+   ```
+   pip install -r requirements.txt
+   ```
+3. Run the gui.py
+   ```
+   python gui.py
+   ```
+   
 ## Dependencies
 
 All required dependencies are bundled with the executable. No additional installation is needed.
