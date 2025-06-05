@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QTabWidget,
                            QLineEdit, QTextEdit, QFileDialog, QComboBox,
                            QSpinBox, QMessageBox, QGroupBox, QRadioButton,
                            QScrollArea, QCheckBox, QSlider, QStackedWidget,
-                           QSizePolicy, QProgressDialog, QProgressBar)
+                           QSizePolicy, QProgressDialog, QProgressBar,
+                           QFrame)
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QSize, QTimer
 from PyQt6.QtGui import QPixmap, QIcon
 from qt_material import apply_stylesheet
@@ -26,6 +27,13 @@ import mmap
 from typing import Iterator, List, Tuple
 import time
 from bs4 import BeautifulSoup
+import urllib.request
+import subprocess
+import ctypes
+import platform
+import shutil
+import zipfile
+import requests
 
 # Configure logging
 logging.basicConfig(
@@ -228,6 +236,7 @@ class MainWindow(QMainWindow):
         self.content_stack.addWidget(self.create_hex_editor_tab())
         self.content_stack.addWidget(self.create_forensics_tab())
         self.content_stack.addWidget(self.create_hash_tab())  # Add hash cracking tab
+        self.content_stack.addWidget(self.create_settings_tab())  # Add settings tab
         
         # Create sidebar buttons with icons
         self.create_sidebar_button("AUTO", "", 0)
@@ -241,6 +250,9 @@ class MainWindow(QMainWindow):
         
         # Add stretch to push content to top
         self.sidebar_layout.addStretch()
+        
+        # Add settings button at the bottom
+        self.create_sidebar_button("Settings", "", 8)
         
         # Initialize sidebar state
         self.sidebar_expanded = True
@@ -284,7 +296,8 @@ class MainWindow(QMainWindow):
             "Audio Stego": "audio.ico",
             "Hex Editor": "hex.ico",
             "Forensics": "foren.ico",
-            "Hash Cracking": "hash.ico"
+            "Hash Cracking": "hash.ico",
+            "Settings": "settings.ico"  # Add settings icon mapping
         }
         
         # Set icon from file
@@ -321,7 +334,7 @@ class MainWindow(QMainWindow):
             self.width_animation.setStartValue(current_width)
             self.width_animation.setEndValue(200)
             # Restore button texts
-            labels = ["AUTO", "Cryptography", "Convert", "Image Stego", "Audio Stego", "Hex Editor", "Forensics", "Hash Cracking"]
+            labels = ["AUTO", "Cryptography", "Convert", "Image Stego", "Audio Stego", "Hex Editor", "Forensics", "Hash Cracking", "Settings"]
             for i in range(1, self.sidebar_layout.count() - 1):
                 widget = self.sidebar_layout.itemAt(i).widget()
                 if isinstance(widget, QPushButton):
@@ -4240,6 +4253,382 @@ class MainWindow(QMainWindow):
                 possible_types.append(hash_type)
         
         return possible_types
+
+    def create_settings_tab(self):
+        """Create the Settings tab for external tools and wordlist management"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(15)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Create a scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # Create a container widget for all content
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setSpacing(15)
+        content_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # External Tools Group
+        tools_group = QGroupBox("External Tools")
+        tools_layout = QVBoxLayout()
+        
+        # Initialize tool status labels dictionary
+        self.tool_status_labels = {}
+        
+        # Tool status and installation section
+        tools_info = {
+            'steghide': {
+                'description': 'Steganography tool for hiding data in images',
+                'windows_url': 'http://steghide.sourceforge.net/download.php',
+                'linux_install': 'sudo apt-get install steghide',
+                'mac_install': 'brew install steghide',
+                'manual_instructions': 'Download and add to PATH or place in tools directory'
+            },
+            'binwalk': {
+                'description': 'Firmware analysis tool',
+                'windows_url': 'https://github.com/ReFirmLabs/binwalk',
+                'linux_install': 'sudo apt-get install binwalk',
+                'mac_install': 'brew install binwalk',
+                'manual_instructions': (
+                    "1. Download from GitHub\n"
+                    "2. Install Python 2.7\n"
+                    "3. Run: pip install python-lzma\n"
+                    "4. Run: python setup.py install\n"
+                    "5. Create executable with PyInstaller\n"
+                    "6. Place binwalk.exe in tools directory or add to PATH"
+                )
+            },
+            'foremost': {
+                'description': 'File carving and recovery tool',
+                'windows_url': 'https://www.kali.org/tools/foremost/',
+                'linux_install': 'sudo apt-get install foremost',
+                'mac_install': 'brew install foremost',
+                'manual_instructions': 'Install WSL and run: sudo apt-get install foremost'
+            },
+            'exiftool': {
+                'description': 'Metadata analysis tool',
+                'windows_url': 'https://exiftool.org',
+                'linux_install': 'sudo apt-get install exiftool',
+                'mac_install': 'brew install exiftool',
+                'manual_instructions': 'Download and add to PATH or place in tools directory'
+            },
+            'zsteg': {
+                'description': 'PNG/BMP steganography detection',
+                'windows_url': 'https://github.com/zed-0xff/zsteg',
+                'linux_install': 'gem install zsteg',
+                'mac_install': 'gem install zsteg',
+                'manual_instructions': 'Install Ruby and run: gem install zsteg'
+            }
+        }
+        
+        # Create tool status widgets
+        for tool_name, info in tools_info.items():
+            tool_container = QWidget()
+            tool_layout = QVBoxLayout(tool_container)
+            tool_layout.setContentsMargins(0, 5, 0, 5)
+            
+            # Tool header with status
+            header_container = QWidget()
+            header_layout = QHBoxLayout(header_container)
+            header_layout.setContentsMargins(0, 0, 0, 0)
+            
+            # Tool name and description
+            name_label = QLabel(f"<b>{tool_name}</b>")
+            name_label.setMinimumWidth(100)
+            desc_label = QLabel(info['description'])
+            desc_label.setWordWrap(True)
+            
+            # Status indicator
+            status_label = QLabel()
+            # Store reference to status label
+            self.tool_status_labels[tool_name] = status_label
+            
+            header_layout.addWidget(name_label)
+            header_layout.addWidget(desc_label, stretch=1)
+            header_layout.addWidget(status_label)
+            
+            tool_layout.addWidget(header_container)
+            
+            # Add manual installation instructions
+            instructions_label = QLabel(info['manual_instructions'])
+            instructions_label.setWordWrap(True)
+            instructions_label.setStyleSheet("color: #95a5a6; font-size: 10pt;")
+            tool_layout.addWidget(instructions_label)
+            
+            # Add download/documentation link
+            if info['windows_url']:
+                link_btn = QPushButton("Open Download/Documentation Page")
+                url = info['windows_url']
+                link_btn.clicked.connect(lambda checked, u=url: self.open_download_url(u))
+                tool_layout.addWidget(link_btn)
+            
+            tools_layout.addWidget(tool_container)
+            
+            # Add separator
+            separator = QFrame()
+            separator.setFrameShape(QFrame.Shape.HLine)
+            separator.setFrameShadow(QFrame.Shadow.Sunken)
+            tools_layout.addWidget(separator)
+        
+        tools_group.setLayout(tools_layout)
+        content_layout.addWidget(tools_group)
+        
+        # Wordlists Group
+        wordlists_group = QGroupBox("Wordlists")
+        wordlists_layout = QVBoxLayout()
+        
+        # Rockyou.txt
+        rockyou_container = QWidget()
+        rockyou_layout = QVBoxLayout(rockyou_container)
+        
+        rockyou_header = QWidget()
+        rockyou_header_layout = QHBoxLayout(rockyou_header)
+        rockyou_header_layout.setContentsMargins(0, 0, 0, 0)
+        
+        rockyou_label = QLabel("<b>rockyou.txt</b>")
+        rockyou_desc = QLabel("Popular password wordlist with over 14 million entries")
+        rockyou_desc.setWordWrap(True)
+        
+        rockyou_header_layout.addWidget(rockyou_label)
+        rockyou_header_layout.addWidget(rockyou_desc, stretch=1)
+        
+        rockyou_layout.addWidget(rockyou_header)
+        
+        # Download status and button
+        self.rockyou_status = QLabel("Not downloaded")
+        download_btn = QPushButton("Download rockyou.txt")
+        download_btn.clicked.connect(self.download_rockyou)
+        
+        rockyou_layout.addWidget(self.rockyou_status)
+        rockyou_layout.addWidget(download_btn)
+        
+        wordlists_layout.addWidget(rockyou_container)
+        wordlists_group.setLayout(wordlists_layout)
+        content_layout.addWidget(wordlists_group)
+        
+        # Add refresh button
+        refresh_btn = QPushButton("Refresh Tool Status")
+        refresh_btn.clicked.connect(self.refresh_tool_status)
+        content_layout.addWidget(refresh_btn)
+        
+        # Add stretch to push everything to the top
+        content_layout.addStretch()
+        
+        # Set the content widget in the scroll area
+        scroll.setWidget(content_widget)
+        layout.addWidget(scroll)
+        
+        # Initial tool status check
+        self.refresh_tool_status()
+        
+        return widget
+        
+    def refresh_tool_status(self):
+        """Check and update the status of all tools"""
+        from modules.forensics.external_tools import check_tool_installed, ExternalToolError
+        
+        for tool_name, label in self.tool_status_labels.items():
+            try:
+                if check_tool_installed(tool_name):
+                    label.setText("✓ Installed")
+                    label.setStyleSheet("color: #2ecc71;")  # Green color
+                else:
+                    label.setText("✗ Not installed")
+                    label.setStyleSheet("color: #e74c3c;")  # Red color
+            except ExternalToolError as e:
+                label.setText("✗ Not installed")
+                label.setStyleSheet("color: #e74c3c;")  # Red color
+                logger.debug(f"Tool {tool_name} not installed: {str(e)}")
+            except Exception as e:
+                label.setText("? Error checking")
+                label.setStyleSheet("color: #f1c40f;")  # Yellow color
+                logger.error(f"Error checking {tool_name}: {str(e)}")
+                logger.error(traceback.format_exc())
+    
+    def open_download_url(self, url):
+        """Open the download URL in the default browser"""
+        import webbrowser
+        webbrowser.open(url)
+    
+    def install_with_pip(self, package):
+        """Install a Python package using pip"""
+        try:
+            subprocess.run([sys.executable, '-m', 'pip', 'install', package], check=True)
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def install_binwalk_windows(self):
+        """Automated installation of binwalk on Windows"""
+        try:
+            progress = QProgressDialog("Installing Binwalk...", "Cancel", 0, 100, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            
+            # Create tools directory if it doesn't exist
+            tools_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
+            os.makedirs(tools_dir, exist_ok=True)
+            
+            # Step 1: Install python-lzma
+            progress.setLabelText("Installing python-lzma...")
+            progress.setValue(10)
+            QApplication.processEvents()
+            if not self.install_with_pip('backports.lzma'):
+                raise Exception("Failed to install python-lzma")
+            
+            # Step 2: Download binwalk from GitHub
+            progress.setLabelText("Downloading binwalk from GitHub...")
+            progress.setValue(30)
+            QApplication.processEvents()
+            
+            binwalk_url = "https://github.com/ReFirmLabs/binwalk/archive/refs/heads/master.zip"
+            temp_dir = tempfile.mkdtemp()
+            zip_path = os.path.join(temp_dir, "binwalk.zip")
+            
+            urllib.request.urlretrieve(binwalk_url, zip_path)
+            
+            # Step 3: Extract binwalk
+            progress.setLabelText("Extracting binwalk...")
+            progress.setValue(50)
+            QApplication.processEvents()
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            
+            # Step 4: Install binwalk
+            progress.setLabelText("Installing binwalk...")
+            progress.setValue(70)
+            QApplication.processEvents()
+            
+            binwalk_dir = os.path.join(temp_dir, "binwalk-master")
+            subprocess.run([sys.executable, 'setup.py', 'install'], cwd=binwalk_dir, check=True)
+            
+            # Step 5: Create executable using PyInstaller
+            progress.setLabelText("Creating binwalk executable...")
+            progress.setValue(80)
+            QApplication.processEvents()
+            
+            if not self.install_with_pip('pyinstaller'):
+                raise Exception("Failed to install PyInstaller")
+            
+            binwalk_script = os.path.join(binwalk_dir, 'src', 'binwalk', '__main__.py')
+            subprocess.run(['pyinstaller', '--onefile', binwalk_script], cwd=temp_dir, check=True)
+            
+            # Step 6: Copy to tools directory
+            progress.setLabelText("Installing to tools directory...")
+            progress.setValue(90)
+            QApplication.processEvents()
+            
+            dist_dir = os.path.join(temp_dir, 'dist')
+            exe_path = os.path.join(dist_dir, 'binwalk.exe')
+            target_path = os.path.join(tools_dir, 'binwalk.exe')
+            
+            # Copy the executable to our tools directory
+            shutil.copy2(exe_path, target_path)
+            
+            # Clean up
+            shutil.rmtree(temp_dir)
+            
+            progress.setValue(100)
+            QMessageBox.information(self, "Success", 
+                "Binwalk has been successfully installed to the tools directory!\n"
+                f"Location: {target_path}")
+            
+            # Update PATH environment variable for the current session
+            os.environ['PATH'] = tools_dir + os.pathsep + os.environ.get('PATH', '')
+            
+            self.refresh_tool_status()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to install binwalk: {str(e)}\n\nPlease try manual installation.")
+        finally:
+            progress.close()
+
+    def install_tool(self, tool_name):
+        """Install a tool based on the system"""
+        if tool_name == "binwalk" and platform.system() == "Windows":
+            self.install_binwalk_windows()
+        else:
+            super().install_tool(tool_name)  # Call the original install method for other cases
+    
+    def download_rockyou(self):
+        """Download and extract rockyou.txt"""
+        try:
+            # Get tools directory
+            tools_dir = self.get_tools_dir()
+            os.makedirs(tools_dir, exist_ok=True)
+            
+            url = "https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt"
+            
+            # Show progress dialog
+            progress = QProgressDialog("Downloading rockyou.txt...", "Cancel", 0, 100, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setAutoClose(True)
+            progress.show()
+            
+            # Download with progress
+            target_path = os.path.join(tools_dir, "rockyou.txt")
+            response = requests.get(url, stream=True)
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(target_path, 'wb') as f:
+                if total_size == 0:  # No content length header
+                    f.write(response.content)
+                else:
+                    downloaded = 0
+                    for data in response.iter_content(chunk_size=4096):
+                        downloaded += len(data)
+                        f.write(data)
+                        progress.setValue(int(100 * downloaded / total_size))
+                        if progress.wasCanceled():
+                            return
+            
+            QMessageBox.information(self, "Success", "rockyou.txt has been downloaded successfully to the tools directory!")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to download rockyou.txt: {str(e)}")
+            raise
+
+    def install_wsl(self):
+        """Install Windows Subsystem for Linux"""
+        try:
+            # Check if running as admin
+            if not ctypes.windll.shell32.IsUserAnAdmin():
+                QMessageBox.warning(self, "Admin Required", 
+                    "WSL installation requires administrator privileges.\n"
+                    "Please run the following command in an administrator PowerShell:\n\n"
+                    "wsl --install")
+                return
+            
+            # Install WSL
+            subprocess.run(["wsl", "--install"], check=True)
+            QMessageBox.information(self, "Success", 
+                "WSL installation started. Your system will need to restart to complete the installation.\n"
+                "After restart, open WSL and run: sudo apt-get update && sudo apt-get install foremost")
+        except subprocess.CalledProcessError as e:
+            QMessageBox.critical(self, "Error", f"Failed to install WSL: {str(e)}")
+        except FileNotFoundError:
+            QMessageBox.critical(self, "Error", 
+                "WSL command not found. Make sure you're running Windows 10 version 2004 or higher.\n"
+                "You can also install WSL manually by:\n"
+                "1. Open PowerShell as Administrator\n"
+                "2. Run: wsl --install")
+
+    def get_tools_dir(self):
+        """Get the tools directory path"""
+        # If we're running from the PyInstaller bundle
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(os.path.dirname(sys.executable))
+            return os.path.join(base_dir, 'tools')
+        # If we're running from source
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools')
+
+    def get_rockyou_path(self):
+        """Get the path to rockyou.txt"""
+        return os.path.join(self.get_tools_dir(), "rockyou.txt")
 
 def check_requirements():
     """Check for required modules without showing warnings"""

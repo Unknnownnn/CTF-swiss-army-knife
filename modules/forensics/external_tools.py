@@ -17,16 +17,53 @@ def check_tool_installed(tool_name: str) -> bool:
     is_windows = platform.system() == 'Windows'
     
     try:
+        # First check in our tools directory for all tools
+        tools_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "tools")
+        tool_exe = f"{tool_name}.exe" if is_windows else tool_name
+        local_tool = os.path.join(tools_dir, tool_exe)
+        
+        # Special case for exiftool which might be named exiftool.exe or exiftool(-k).exe
+        if tool_name == 'exiftool' and is_windows:
+            local_tool_alt = os.path.join(tools_dir, "exiftool(-k).exe")
+            if os.path.exists(local_tool_alt):
+                return True
+        
+        if os.path.exists(local_tool):
+            return True
+        
+        # If not in tools dir, try specific tool checks
+        if tool_name == 'binwalk':
+            try:
+                import binwalk
+                return True
+            except ImportError:
+                try:
+                    subprocess.run(['binwalk', '--help'], capture_output=True, check=True)
+                    return True
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    if is_windows:
+                        raise ExternalToolError(
+                            "Binwalk not found. Click Install to install automatically, or follow these steps:\n"
+                            "1. Download from GitHub\n"
+                            "2. Install Python 2.7\n"
+                            "3. Run: pip install python-lzma\n"
+                            "4. Run: python setup.py install\n"
+                            "5. Create executable with PyInstaller\n"
+                            "6. Place binwalk.exe in tools directory or add to PATH"
+                        )
+                    else:
+                        raise ExternalToolError(
+                            "Binwalk not found. To install:\n"
+                            "sudo apt-get install binwalk"
+                        )
+        
         if tool_name == 'steghide' and is_windows:
-            # On Windows, first check if steghide is in PATH
             try:
                 subprocess.run(['steghide', '--version'], capture_output=True, check=True)
                 return True
             except subprocess.CalledProcessError:
-                # Command exists but returned error
                 return True
             except FileNotFoundError:
-                # Try checking common installation paths on Windows
                 common_paths = [
                     os.path.join(os.environ.get('ProgramFiles', ''), 'steghide', 'steghide.exe'),
                     os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'steghide', 'steghide.exe'),
@@ -39,11 +76,11 @@ def check_tool_installed(tool_name: str) -> bool:
                     "Steghide not found. Please install it:\n"
                     "1. Download from http://steghide.sourceforge.net/download.php\n"
                     "2. Extract to a folder (e.g., C:\\Program Files\\steghide)\n"
-                    "3. Add the folder to your system PATH\n"
+                    "3. Add the folder to your system PATH or place in tools directory\n"
                     "Or use Windows Subsystem for Linux (WSL) and install with: sudo apt-get install steghide"
                 )
         
-        # For other tools or non-Windows systems
+        # For other tools, try command line
         try:
             subprocess.run([tool_name, '--help'], capture_output=True, stderr=subprocess.PIPE)
             return True
@@ -52,46 +89,11 @@ def check_tool_installed(tool_name: str) -> bool:
             return True
         except FileNotFoundError:
             # Tool is not installed
-            install_instructions = {
-                'steghide': {
-                    'linux': 'sudo apt-get install steghide',
-                    'darwin': 'brew install steghide',
-                    'windows': 'Download from http://steghide.sourceforge.net/download.php'
-                },
-                'binwalk': {
-                    'linux': 'sudo apt-get install binwalk',
-                    'darwin': 'brew install binwalk',
-                    'windows': 'pip install binwalk'
-                },
-                'foremost': {
-                    'linux': 'sudo apt-get install foremost',
-                    'darwin': 'brew install foremost',
-                    'windows': 'Use Windows Subsystem for Linux (WSL) and run: sudo apt-get install foremost'
-                },
-                'exiftool': {
-                    'linux': 'sudo apt-get install exiftool',
-                    'darwin': 'brew install exiftool',
-                    'windows': 'Download from https://exiftool.org'
-                },
-                'zsteg': {
-                    'all': 'gem install zsteg'
-                }
-            }
-            
-            os_type = platform.system().lower()
-            if tool_name in install_instructions:
-                if os_type in install_instructions[tool_name]:
-                    instruction = install_instructions[tool_name][os_type]
-                elif 'all' in install_instructions[tool_name]:
-                    instruction = install_instructions[tool_name]['all']
-                else:
-                    instruction = "Please refer to the tool's documentation"
-                
-                raise ExternalToolError(
-                    f"{tool_name} is not installed. To install:\n{instruction}"
-                )
-            else:
-                raise ExternalToolError(f"{tool_name} is not installed")
+            raise ExternalToolError(
+                f"{tool_name} not found. Please download and either:\n"
+                f"1. Add it to your system PATH, or\n"
+                f"2. Place it in the tools directory: {tools_dir}"
+            )
     
     except Exception as e:
         if not isinstance(e, ExternalToolError):
