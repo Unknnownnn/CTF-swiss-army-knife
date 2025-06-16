@@ -109,6 +109,3 @@ OR BUILD YOURSELF BY:
 
 All required dependencies are bundled with the executable. No additional installation is needed.
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
